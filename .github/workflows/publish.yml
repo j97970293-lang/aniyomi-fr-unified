@@ -1,0 +1,68 @@
+name: Publish Aniyomi repository
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore signing key
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          test -n "$SIGNING_KEY" || { echo "Missing SIGNING_KEY secret"; exit 1; }
+          printf '%s' "$SIGNING_KEY" | base64 --decode > signingkey.jks
+
+      - name: Build signed APK
+        env:
+          ALIAS: ${{ secrets.ALIAS }}
+          KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew :src:fr:frunified:spotlessCheck :src:fr:frunified:assembleRelease
+
+      - name: Create extension repository
+        run: |
+          APK=$(find src/fr/frunified/build/outputs/apk/release -name '*.apk' -print -quit)
+          python3 tools/create-repo.py "$APK" public \
+            --name "FR Unifié" \
+            --website "https://github.com/${GITHUB_REPOSITORY}"
+          cp README.md public/README.md
+
+      - name: Publish repo branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: repo
+          publish_dir: public
+          force_orphan: true
+
+      - name: Upload signed APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-unified-aniyomi-release
+          path: src/fr/frunified/build/outputs/apk/release/*.apk
+          if-no-files-found: error

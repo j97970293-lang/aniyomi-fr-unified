@@ -1,0 +1,42 @@
+ext {
+    extName = 'FR Unifié'
+    extClass = '.FrUnified'
+    extVersionCode = 2
+    extNames = ['FR Unifié']
+    isNsfw = false
+}
+
+apply from: "$rootDir/common.gradle"
+
+android {
+    sourceSets {
+        main.assets.srcDirs = ['assets']
+        test.java.srcDirs = ['test']
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+        coreLibraryDesugaringEnabled true
+    }
+
+    packaging {
+        resources {
+            excludes += [
+                'META-INF/LICENSE',
+                'META-INF/LICENSE.txt',
+                'META-INF/NOTICE',
+                'META-INF/NOTICE.txt'
+            ]
+        }
+    }
+}
+
+dependencies {
+    implementation files('libs/rhino-nuvio-1.9.1.jar')
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
+
+    testImplementation libs.bundles.common
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20260814'
+}
