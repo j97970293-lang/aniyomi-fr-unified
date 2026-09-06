@@ -43,6 +43,7 @@ class NuvioNetworkSmokeTest {
                         FrSettings.KEY_NUVIO_REPOS to "http://127.0.0.1:${server.port}/manifest.json",
                         FrSettings.KEY_NUVIO_CONCURRENCY to "1",
                         FrSettings.KEY_NUVIO_MAX to "4",
+                        FrSettings.KEY_NUVIO_ENABLED to "anime-sama-smoke",
                     ),
                 ),
             )

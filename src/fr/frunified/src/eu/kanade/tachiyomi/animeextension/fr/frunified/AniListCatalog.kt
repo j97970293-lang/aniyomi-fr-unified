@@ -15,6 +15,7 @@ object AniListCatalog {
         format
         status
         episodes
+        nextAiringEpisode { episode airingAt }
         duration
         averageScore
         genres
@@ -33,7 +34,12 @@ object AniListCatalog {
     fun item(media: JSONObject): CatalogItem? {
         val id = media.optInt("id").takeIf { it > 0 } ?: return null
         val titles = media.optJSONObject("title")
-        val title = listOf("userPreferred", "english", "romaji", "native")
+        val preferredKeys = when (FrSettings.catalogLanguage.substringBefore('-')) {
+            "ja" -> listOf("native", "romaji", "english", "userPreferred")
+            "en" -> listOf("english", "userPreferred", "romaji", "native")
+            else -> listOf("english", "romaji", "userPreferred", "native")
+        }
+        val title = preferredKeys
             .firstNotNullOfOrNull { key ->
                 titles?.optString(key)?.takeIf { it.isNotBlank() && it != "null" }
             } ?: return null

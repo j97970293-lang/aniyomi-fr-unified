@@ -1,9 +1,9 @@
 package eu.kanade.tachiyomi.animeextension.fr.frunified
 
-import android.util.Base64
 import eu.kanade.tachiyomi.animesource.model.FetchType
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import org.json.JSONObject
+import java.util.Base64
 
 /** Identifiant stable d'une fiche du catalogue unifié. */
 data class CatalogId(
@@ -31,7 +31,7 @@ data class CatalogId(
                 .substringAfter("frunified/", raw)
                 .trim('/')
             val parts = clean.split('/')
-            val start = parts.indexOfFirst { it in setOf("tmdb", "anilist", "mal") }
+            val start = parts.indexOfFirst { it in setOf("tmdb", "anilist", "mal", "stremio") }
             if (start < 0 || parts.size < start + 3) return null
             val season = if (parts.getOrNull(start + 3) == "season") {
                 parts.getOrNull(start + 4)?.toIntOrNull()
@@ -80,7 +80,7 @@ data class CatalogItem(
             }
         }.ifBlank { null }
         status = SAnime.UNKNOWN
-        fetch_type = if (id.kind == "tv") FetchType.Seasons else FetchType.Episodes
+        fetch_type = if (id.kind in setOf("tv", "series")) FetchType.Seasons else FetchType.Episodes
     }
 }
 
@@ -96,6 +96,10 @@ data class PlayPayload(
     val imdbId: String? = null,
     val anilistId: Int? = null,
     val malId: Int? = null,
+    val stremioType: String? = null,
+    val stremioId: String? = null,
+    val stremioAddon: String? = null,
+    val stremioMetaId: String? = null,
 ) {
     val isSeries: Boolean get() = kind != "movie"
     val primaryTitle: String get() = titles.firstOrNull().orEmpty()
@@ -112,9 +116,13 @@ data class PlayPayload(
             imdbId?.let { put("imdb", it) }
             anilistId?.let { put("anilist", it) }
             malId?.let { put("mal", it) }
+            stremioType?.let { put("stremioType", it) }
+            stremioId?.let { put("stremioId", it) }
+            stremioAddon?.let { put("stremioAddon", it) }
+            stremioMetaId?.let { put("stremioMetaId", it) }
         }.toString()
         return "play/" +
-            Base64.encodeToString(raw.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+            Base64.getUrlEncoder().withoutPadding().encodeToString(raw.toByteArray(Charsets.UTF_8))
     }
 
     companion object {
@@ -124,7 +132,7 @@ data class PlayPayload(
             val text = if (encoded.startsWith("{")) {
                 encoded
             } else {
-                String(Base64.decode(encoded, Base64.URL_SAFE or Base64.NO_WRAP), Charsets.UTF_8)
+                String(Base64.getUrlDecoder().decode(encoded), Charsets.UTF_8)
             }
             val json = JSONObject(text)
             PlayPayload(
@@ -138,6 +146,10 @@ data class PlayPayload(
                 imdbId = json.optString("imdb").takeIf { it.startsWith("tt") },
                 anilistId = json.optInt("anilist").takeIf { it > 0 },
                 malId = json.optInt("mal").takeIf { it > 0 },
+                stremioType = json.optString("stremioType").takeIf(String::isNotBlank),
+                stremioId = json.optString("stremioId").takeIf(String::isNotBlank),
+                stremioAddon = json.optString("stremioAddon").takeIf(String::isNotBlank),
+                stremioMetaId = json.optString("stremioMetaId").takeIf(String::isNotBlank),
             )
         }.getOrNull()
     }

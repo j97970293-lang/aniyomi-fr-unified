@@ -6,43 +6,46 @@ La structure Gradle et le contrat d’extension utilisent le projet Aniyomi Exte
 
 - <https://github.com/aniyomiorg/aniyomi-extensions>
 - <https://github.com/aniyomiorg/aniyomi-extensions-lib>
-- dépôt de base complémentaire : <https://github.com/Secozzi/aniyomi-extensions>
+- référence complémentaire : <https://github.com/Secozzi/aniyomi-extensions>
 
 Les fichiers dérivés de cette base sont distribués selon la licence Apache 2.0 présente dans `LICENSE`.
 
-## FR Unifié CloudStream
+## Origine de FR Unifié
 
-Ce port dérive de l’extension CloudStream FR Unifié :
+Certaines logiques initiales dérivent du projet FR Unifié historique :
 
 - <https://github.com/j97970293-lang/cloudstream-fr-unified>
 
-Le port remplace les API CloudStream par l’API d’extension Aniyomi, tout en conservant la logique de catalogue et l’environnement d’exécution Nuvio.
+La version Aniyomi 16.6 est autonome et ne charge, n’importe ni n’exécute aucun plugin CloudStream. Elle utilise directement les contrats Aniyomi, Nuvio et Stremio.
 
 ## Mozilla Rhino 1.9.1
 
 L’APK embarque une version adaptée et relocalisée de Mozilla Rhino 1.9.1. Rhino est distribué selon la **Mozilla Public License 2.0**.
 
-- source upstream : <https://github.com/mozilla/rhino/tree/Rhino1_9_1_Release>
+- source amont : <https://github.com/mozilla/rhino/tree/Rhino1_9_1_Release>
 - texte de licence : `third_party/rhino/MPL-2.0.txt`
 - modifications et procédure de reconstruction : `third_party/rhino/PATCHES.md`
 
 ## Dépôts Nuvio
 
-L’extension télécharge à l’exécution les manifests et bundles choisis par l’utilisateur. Les dépôts proposés par défaut sont :
+L’extension télécharge à l’exécution les manifests et bundles choisis par l’utilisateur. Les familles proposées par défaut sont :
 
 - <https://github.com/Gowaru/gowaru-nuvio-providers>
-- <https://github.com/z7kx/z7kx-nuvio-provider>
+- <https://github.com/D3adlyRocket/Anime-Nuvio>
+- <https://github.com/yoruix/nuvio-providers>
 - <https://github.com/phisher98/phisher-nuvio-providers>
+- <https://github.com/fmustafayaman/turkish-nuvio>
 
-Ces bundles ne sont pas incorporés au code source ni à l’APK. Chaque dépôt et chaque provider reste soumis à ses propres auteurs, conditions et licences.
+Ces bundles ne sont pas incorporés au code source ni à l’APK. Chaque dépôt et provider reste soumis à ses propres auteurs, conditions et licences.
 
-## Addon Stremio et dépôts CloudStream suivis
+## Addons Stremio
 
-L’addon Stremio proposé par défaut est fourni par :
+Les addons proposés par défaut ou utilisés comme référence comprennent :
 
 - <https://github.com/Snixi92/nuvio-french-providers>
+- <https://tmdb.elfhosted.com/>
 
-Les dépôts CloudStream de mouradchaouche, Nikola17, blizzx4644 et Kraptor123 sont uniquement inspectés pour leurs métadonnées publiques et l’association de noms à des moteurs Nuvio compatibles. Leurs binaires `.cs3` et leur code ne sont ni incorporés ni exécutés dans l’APK. Consultez `UPSTREAMS.md` pour les URL et révisions contrôlées.
+Les manifests et routes HTTP sont interrogés à l’exécution ; leur code serveur n’est pas distribué dans l’APK.
 
 ## Services de métadonnées
 

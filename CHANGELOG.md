@@ -1,5 +1,44 @@
 # Journal des modifications
 
+## 16.6 — 6 septembre 2026
+
+- correction de **One Piece** et des autres séries en cours : suppression du repli fixe à 24 épisodes, prise en compte de `nextAiringEpisode` d’AniList et comptage paginé Jikan jusqu’à la dernière page disponible ;
+- ajout des catalogues Stremio complets (catalogue, recherche, fiche, saisons, épisodes et flux), selon les conventions de l’extension Stremio du dépôt Secozzi ;
+- ajout d’un sélecteur de catalogue Stremio et possibilité de désactiver ensemble ou séparément TMDB, AniList et Jikan ;
+- choix de la priorité **Nuvio → Stremio** ou **Stremio → Nuvio**, tout en continuant à chercher une VF lorsqu’un premier moteur ne fournit que du VOSTFR ;
+- choix multiple des langues de catalogue : français, anglais, espagnol, allemand, italien, portugais, japonais, hindi, turc, indonésien, polonais et arabe ;
+- ajout de cinq familles de dépôts Nuvio : Gowaru, D3adlyRocket, Yoruix, Phisher et Turkish ; sélection individuelle des providers et filtrage par langue ;
+- activation par défaut de tous les providers compatibles avec les langues choisies, sauf exclusion explicite de Movix tant que ses flux répondent HTTP 403 ;
+- amélioration du moteur Rhino pour les bundles internationaux : abaissement des boucles `for…of`, prise en charge des littéraux regex, compatibilité des déclarations `const`, chemins de scripts amont de repli et cache séparé par dépôt ;
+- conservation des en-têtes de lecture, affichage de la langue/du lecteur/de la qualité et rejet préalable des flux répondant explicitement 401/403/404/410/429/451 ;
+- suppression complète de l’intégration CloudStream : seuls les manifests Nuvio et Stremio réellement exécutables peuvent désormais être ajoutés ;
+- les indisponibilités propres à un site ou à un provider international n’empêchent plus la publication de l’extension.
+
+## 16.5 — 6 septembre 2026 (correctifs après test OPPO)
+
+- correction du filtre de catalogue : Animés/Films/Séries s’applique aussi avec une recherche vide et reste mémorisé ;
+- le même choix pilote désormais les onglets Populaires et Derniers ;
+- les titres des serveurs affichent réellement VF/VOSTFR, l’hébergeur et la qualité ;
+- le mode rapide continue après une source VOSTFR lorsqu’une VF peut encore être trouvée ;
+- FrenchStream, validé en VF par la sonde réseau, passe avant les liens Movix actuellement refusés ;
+- validation légère des playlists HLS et de leur premier segment, avec rejet des liens répondant explicitement 403 ;
+- Nuvio est exécuté avant Stremio afin de ne plus faire expirer ses URL signées pendant l’attente d’un autre moteur ;
+- les sous-titres externes restent attachés aux liens Nuvio, avec une attente strictement limitée à trois secondes ;
+- Stremio devient le moteur de repli uniquement lorsque Nuvio ne trouve aucun lien valide ;
+- simplification des réglages : une seule entrée clairement identifiée pour coller chaque type d’URL.
+
+## 16.4 — 6 septembre 2026 (candidate Nuvio)
+
+- Nuvio utilise désormais le mode rapide par défaut et s’arrête à la première source réussie ;
+- Movix, FrenchStream et Anime-Sama sont les trois seules sources Nuvio activées par défaut ;
+- l’ordre des sources est adapté aux films/séries et aux animés ;
+- chaque moteur Rhino est borné à 40 secondes, avec arrêt des callbacks tardifs ;
+- ajout des modes Nuvio rapide, équilibré et complet ;
+- ajout d’un diagnostic Nuvio réel avec durée, état Rhino et détails HTTP sans URL sensible ;
+- séparation des entrées et sélecteurs Nuvio, Stremio et CloudStream ;
+- ajout d’une migration v3 pour les réglages Nuvio existants ;
+- aucun changement fonctionnel des moteurs Stremio et CloudStream dans cette candidate.
+
 ## 16.3 — 6 septembre 2026
 
 - correction du crash AndroidX `Key cannot be null` à l’ouverture des deux nouvelles actions de réglages ;

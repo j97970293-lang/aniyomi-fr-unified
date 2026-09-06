@@ -22,6 +22,7 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import com.frunified.rhino.Context as RhinoContext
 
@@ -30,18 +31,20 @@ import com.frunified.rhino.Context as RhinoContext
  * (dépôts Gowaru, Phisher, Michat88…) directement dans l'extension.
  *
  * Chaque scrapeur expose `getStreams(tmdbId, mediaType, seasonNum, episodeNum)`
- * et retourne une liste de flux. On fournit un petit environnement JS
+ * et retourne une liste de flux. On fournit un environnement JS
  * (fetch, Promise, URL, Base64, setTimeout…) branché sur le réseau Android,
- * puis on convertit les flux en [ExtractorLink] pour le lecteur CloudStream.
+ * puis on convertit directement les résultats en [Video] pour le lecteur Aniyomi.
  */
 object NuvioClient {
 
     private const val SCRIPT_TTL_MS = 12 * 60 * 60 * 1000L // 12 h
     private const val MANIFEST_TTL_MS = 6 * 60 * 60 * 1000L // 6 h
-    private const val SCRAPER_TIMEOUT_MS = 90_000L
-    private const val NUVIO_CONCURRENCY = 6
+    private const val SCRAPER_TIMEOUT_MS = 40_000L
+    private const val NUVIO_CONCURRENCY = 3
 
-    private const val NETWORK_TIMEOUT_MS = 30_000
+    private const val NETWORK_TIMEOUT_MS = 10_000
+    private const val PROBE_TIMEOUT_MS = 5_000
+    private const val PROBE_BODY_LIMIT = 256 * 1024
     private const val RHINO_STACK_BYTES = 2L * 1024 * 1024
 
     data class NuvioScraper(
@@ -56,9 +59,13 @@ object NuvioClient {
     ) {
         val isFrench: Boolean get() = contentLanguage.any { it.startsWith("fr") }
         val scriptUrl: String
-            get() = ("$repoBase/$filename")
-                .replace(Regex("https://+"), "https://")
-                .replace(Regex("http://+"), "http://")
+            get() = if (filename.startsWith("http://") || filename.startsWith("https://")) {
+                filename
+            } else {
+                ("$repoBase/$filename")
+                    .replace(Regex("https://+"), "https://")
+                    .replace(Regex("http://+"), "http://")
+            }
     }
 
     private val manifestCache = ConcurrentHashMap<String, Pair<Long, List<NuvioScraper>>>()
@@ -89,7 +96,7 @@ object NuvioClient {
 
     fun init(context: Context) {
         if (cacheDir == null) {
-            cacheDir = runCatching { File(context.filesDir, "nuvio-v7").apply { mkdirs() } }.getOrNull()
+            cacheDir = runCatching { File(context.filesDir, "nuvio-v8").apply { mkdirs() } }.getOrNull()
         }
     }
 
@@ -116,8 +123,8 @@ object NuvioClient {
                         tt == "anime_movie"
                 }
             }
-            .filter { FrSettings.nuvioAllLangs || it.isFrench || it.contentLanguage.isEmpty() }
-            .distinctBy { it.id }
+            .filter { FrSettings.isNuvioLanguageEnabled(it.contentLanguage) }
+            .distinctBy { it.id.lowercase() }
             .sortedWith { a, b ->
                 val oa = FrSettings.nuvioOrder.indexOf(a.id).let { if (it < 0) Int.MAX_VALUE else it }
                 val ob = FrSettings.nuvioOrder.indexOf(b.id).let { if (it < 0) Int.MAX_VALUE else it }
@@ -168,51 +175,389 @@ object NuvioClient {
 
     // ----------------------------------------------------- exécution JS
 
-    private fun scriptFile(id: String): File? =
-        cacheDir?.let { File(it, "${id.replace(Regex("[^A-Za-z0-9_-]"), "_")}.js") }
+    private fun scriptFile(scraper: NuvioScraper): File? = cacheDir?.let {
+        val id = scraper.id.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        val origin = Integer.toHexString(scraper.scriptUrl.hashCode())
+        File(it, "$id-$origin.js")
+    }
+
+    private fun scriptCandidates(scraper: NuvioScraper): List<String> = buildList {
+        add(scraper.scriptUrl)
+        if (!scraper.filename.startsWith("http")) {
+            // Quelques manifests amont ont gardé un ancien préfixe `src/` alors
+            // que leurs bundles ont été déplacés à la racine du dépôt.
+            scraper.filename.removePrefix("src/").takeIf { it != scraper.filename }?.let {
+                add("${scraper.repoBase}/$it")
+            }
+            if ('/' in scraper.filename) {
+                add("${scraper.repoBase}/providers/${scraper.filename.substringAfterLast('/')}")
+            }
+        }
+    }.distinct()
 
     private suspend fun script(scraper: NuvioScraper): String? {
-        val file = scriptFile(scraper.id)
+        val file = scriptFile(scraper)
         val fresh = file?.takeIf { it.exists() && System.currentTimeMillis() - it.lastModified() < SCRIPT_TTL_MS }
         if (fresh != null) {
             val cached = runCatching { fresh.readText() }.getOrNull()
             if (!cached.isNullOrBlank()) return cached
         }
-        val code = runCatching {
-            withContext(Dispatchers.IO) { httpGet(scraper.scriptUrl, emptyMap()) }
-        }.getOrNull()?.takeIf { it.isNotBlank() }
+        val code = withContext(Dispatchers.IO) {
+            scriptCandidates(scraper).firstNotNullOfOrNull { url ->
+                val (status, body) = doHttp(url, "GET", emptyMap(), null)
+                body.takeIf { status in 200..299 && it.isNotBlank() }
+            }
+        }
         if (code != null) runCatching { file?.writeText(code) }
         return code
     }
 
-    /** Exécute tous les scrapeurs activés et relaie leurs flux. */
+    /**
+     * Le Rhino Android intégré ne prend pas en charge `for … of` et traite certaines
+     * déclarations `const` comme si elles partageaient la portée de la fonction. Les
+     * bundles internationaux sont donc abaissés vers une syntaxe compatible, sans
+     * modifier les chaînes, commentaires ou littéraux d'expression régulière.
+     */
+    internal fun transpileForOf(source: String): String {
+        val output = StringBuilder(source.length + 256)
+        var copiedUntil = 0
+        var index = 0
+        var serial = 0
+        while (index < source.length) {
+            index = skipJsLiteralOrComment(source, index).takeIf { it > index } ?: index
+            if (
+                index + 3 <= source.length &&
+                source.startsWith("for", index) &&
+                (index == 0 || !source[index - 1].isJavaIdentifierPart()) &&
+                (index + 3 == source.length || !source[index + 3].isJavaIdentifierPart())
+            ) {
+                var open = index + 3
+                while (open < source.length && source[open].isWhitespace()) open++
+                if (open < source.length && source[open] == '(') {
+                    val close = matchingParenthesis(source, open)
+                    if (close > open) {
+                        val body = source.substring(open + 1, close)
+                        val of = topLevelOf(body)
+                        if (of >= 0) {
+                            val declaration = body.substring(0, of).trim()
+                                .replace(Regex("^(?:const|let|var)\\s+"), "")
+                            val expression = body.substring(of + 2).trim()
+                            val variables = when {
+                                declaration.matches(Regex("[A-Za-z_${'$'}][A-Za-z0-9_${'$'}]*")) ->
+                                    listOf(declaration)
+
+                                declaration.matches(
+                                    Regex(
+                                        "\\[\\s*[A-Za-z_${'$'}][A-Za-z0-9_${'$'}]*\\s*,\\s*[A-Za-z_${'$'}][A-Za-z0-9_${'$'}]*\\s*]",
+                                    ),
+                                ) -> declaration.trim('[', ']').split(',').map(String::trim)
+
+                                else -> emptyList()
+                            }
+                            if (variables.isNotEmpty() && expression.isNotBlank()) {
+                                val array = "__fr_a$serial"
+                                val cursor = "__fr_i$serial"
+                                val value = "__fr_v$serial"
+                                val assign = if (variables.size == 1) {
+                                    "(${variables[0]}=$array[$cursor])"
+                                } else {
+                                    "($value=$array[$cursor]),(${variables[0]}=$value[0]),(${variables[1]}=$value[1])"
+                                }
+                                val declared = (listOf(value) + variables).distinct().joinToString(",")
+                                output.append(source, copiedUntil, open + 1)
+                                output.append("let $array=__frToArray(($expression)),$cursor=0,$declared;")
+                                output.append("$cursor<$array.length&&($assign,true);$cursor++")
+                                copiedUntil = close
+                                index = close
+                                serial++
+                            }
+                        }
+                    }
+                }
+            }
+            index++
+        }
+        output.append(source, copiedUntil, source.length)
+        return lowerConstDeclarations(output.toString())
+    }
+
+    private fun lowerConstDeclarations(source: String): String {
+        val output = StringBuilder(source.length)
+        var copiedUntil = 0
+        var index = 0
+        while (index < source.length) {
+            val skipped = skipJsLiteralOrComment(source, index)
+            if (skipped > index) {
+                index = skipped
+                continue
+            }
+            if (
+                source.startsWith("const", index) &&
+                (index == 0 || !source[index - 1].isJavaIdentifierPart()) &&
+                (index + 5 == source.length || !source[index + 5].isJavaIdentifierPart())
+            ) {
+                output.append(source, copiedUntil, index).append("var")
+                copiedUntil = index + 5
+                index += 5
+            } else {
+                index++
+            }
+        }
+        output.append(source, copiedUntil, source.length)
+        return output.toString()
+    }
+
+    private fun topLevelOf(value: String): Int {
+        var round = 0
+        var square = 0
+        var curly = 0
+        var index = 0
+        while (index + 1 < value.length) {
+            val skipped = skipJsLiteralOrComment(value, index)
+            if (skipped > index) {
+                index = skipped
+                continue
+            }
+            when (value[index]) {
+                '(' -> round++
+                ')' -> round--
+                '[' -> square++
+                ']' -> square--
+                '{' -> curly++
+                '}' -> curly--
+            }
+            if (
+                round == 0 &&
+                square == 0 &&
+                curly == 0 &&
+                value.startsWith("of", index) &&
+                index > 0 &&
+                value[index - 1].isWhitespace() &&
+                index + 2 < value.length &&
+                value[index + 2].isWhitespace()
+            ) {
+                return index
+            }
+            index++
+        }
+        return -1
+    }
+
+    private fun matchingParenthesis(value: String, open: Int): Int {
+        var depth = 0
+        var index = open
+        while (index < value.length) {
+            val skipped = skipJsLiteralOrComment(value, index)
+            if (skipped > index) {
+                index = skipped
+                continue
+            }
+            when (value[index]) {
+                '(' -> depth++
+
+                ')' -> {
+                    depth--
+                    if (depth == 0) return index
+                }
+            }
+            index++
+        }
+        return -1
+    }
+
+    private fun skipJsLiteralOrComment(value: String, start: Int): Int {
+        if (start >= value.length) return start
+        val quote = value[start]
+        if (quote == '\'' || quote == '"' || quote == '`') {
+            var index = start + 1
+            while (index < value.length) {
+                if (value[index] == '\\') {
+                    index += 2
+                } else if (value[index] == quote) {
+                    return index + 1
+                } else {
+                    index++
+                }
+            }
+            return value.length
+        }
+        if (quote == '/' && value.getOrNull(start + 1) == '/') {
+            val end = value.indexOf('\n', start + 2)
+            return if (end < 0) value.length else end + 1
+        }
+        if (quote == '/' && value.getOrNull(start + 1) == '*') {
+            val end = value.indexOf("*/", start + 2)
+            return if (end < 0) value.length else end + 2
+        }
+        if (quote == '/' && isRegexStart(value, start)) {
+            var index = start + 1
+            var inClass = false
+            while (index < value.length) {
+                when {
+                    value[index] == '\\' -> index += 2
+
+                    value[index] == '[' -> {
+                        inClass = true
+                        index++
+                    }
+
+                    value[index] == ']' -> {
+                        inClass = false
+                        index++
+                    }
+
+                    value[index] == '/' && !inClass -> {
+                        index++
+                        while (index < value.length && value[index].isLetter()) index++
+                        return index
+                    }
+
+                    value[index] == '\n' || value[index] == '\r' -> return start
+
+                    else -> index++
+                }
+            }
+        }
+        return start
+    }
+
+    private fun isRegexStart(value: String, slash: Int): Boolean {
+        var previous = slash - 1
+        while (previous >= 0 && value[previous].isWhitespace() && value[previous] != '\n') previous--
+        if (previous < 0 || value[previous] == '\n') return true
+        if (value[previous] in "(=:[,!&|?{};+-*%~<>") return true
+        val before = value.substring(0, previous + 1)
+        return Regex("(?:return|case|throw|else|do|typeof|delete|void|yield)\\s*$").containsMatchIn(before)
+    }
+
+    /** Exécute les scrapeurs activés selon le mode rapide, équilibré ou complet. */
     suspend fun streams(payload: PlayPayload, callback: (Video) -> Unit): Boolean {
         if (!FrSettings.useNuvio) return false
         lastResults.clear()
         syncSemaphore()
 
         val tmdbId = tmdbId(payload) ?: return false
-        val all = scrapers()
+        val all = orderForPayload(scrapers(), payload)
         if (all.isEmpty()) return false
 
         val mediaType = if (payload.isSeries) "tv" else "movie"
         val season = if (payload.isSeries) (payload.season ?: 1) else 0
         val episode = if (payload.isSeries) (payload.episode ?: 1) else 0
 
-        return coroutineScope {
-            all.map { scraper ->
-                async {
-                    runCatching {
-                        semaphore.withPermit {
-                            withTimeoutOrNull(SCRAPER_TIMEOUT_MS) {
+        return when (FrSettings.nuvioSearchMode) {
+            "complete" -> coroutineScope {
+                all.map { scraper ->
+                    async {
+                        runCatching {
+                            semaphore.withPermit {
                                 runScraper(scraper, tmdbId, mediaType, season, episode, payload, callback)
-                            } ?: false
-                        }
-                    }.getOrDefault(false)
-                }
-            }.awaitAll().any { it }
+                            }
+                        }.getOrDefault(false)
+                    }
+                }.awaitAll().any { it }
+            }
+
+            "balanced" -> runSequential(
+                all,
+                2,
+                tmdbId,
+                mediaType,
+                season,
+                episode,
+                payload,
+                callback,
+            )
+
+            else -> runSequential(
+                all,
+                1,
+                tmdbId,
+                mediaType,
+                season,
+                episode,
+                payload,
+                callback,
+            )
         }
     }
+
+    private suspend fun runSequential(
+        scrapers: List<NuvioScraper>,
+        successesWanted: Int,
+        tmdbId: Int,
+        mediaType: String,
+        season: Int,
+        episode: Int,
+        payload: PlayPayload,
+        callback: (Video) -> Unit,
+    ): Boolean {
+        var successes = 0
+        var sawExplicitAudio = false
+        var foundFrenchAudio = false
+        for (scraper in scrapers) {
+            val ok = runCatching {
+                runScraper(scraper, tmdbId, mediaType, season, episode, payload) { video ->
+                    audioTag(video.videoTitle)?.let { tag ->
+                        sawExplicitAudio = true
+                        if (tag in setOf("VF", "VFF", "VFQ", "MULTI")) foundFrenchAudio = true
+                    }
+                    callback(video)
+                }
+            }.getOrDefault(false)
+            if (ok) {
+                successes++
+                if (successes >= successesWanted && (!sawExplicitAudio || foundFrenchAudio)) return true
+            }
+        }
+        return successes > 0
+    }
+
+    private fun orderForPayload(scrapers: List<NuvioScraper>, payload: PlayPayload): List<NuvioScraper> {
+        val anime = payload.kind == "anime" || payload.anilistId != null || payload.malId != null
+        val mediaType = if (payload.isSeries) "tv" else "movie"
+        val compatible = scrapers.filter { scraper ->
+            scraper.supportedTypes.isEmpty() ||
+                scraper.supportedTypes.any { type ->
+                    val normalized = type.lowercase()
+                    normalized == mediaType ||
+                        (mediaType == "tv" && normalized == "series") ||
+                        (anime && normalized in setOf("anime", "animation", "anime_movie"))
+                }
+        }.filterNot { !anime && it.id in ANIME_FOCUSED_IDS }
+        val priority = if (anime) {
+            listOf("frenchstream", "movix", "anime-sama")
+        } else {
+            listOf("frenchstream", "movix")
+        }
+        return compatible.sortedWith(
+            compareBy<NuvioScraper> {
+                // L'ordre enregistré par le sélecteur utilisateur prime toujours.
+                FrSettings.nuvioOrder.indexOf(it.id).let { index -> if (index < 0) Int.MAX_VALUE else index }
+            }.thenBy {
+                priority.indexOf(it.id).let { index -> if (index < 0) Int.MAX_VALUE else index }
+            }.thenBy { it.name.lowercase() },
+        )
+    }
+
+    private val ANIME_FOCUSED_IDS = setOf(
+        "anime-ultime",
+        "anime-sama",
+        "animesama-co",
+        "animesultra",
+        "animevostfr",
+        "animoflix",
+        "french-manga",
+        "voiranime-homes",
+        "mugiwarastream",
+        "sekai",
+        "voiranime",
+        "voiranime-rip",
+        "vostfree",
+        "waveanime",
+        "neko-sama",
+        "fullanime",
+        "animevost-fr",
+    )
 
     // ------------------------------------------- compatibilité Android (dex)
 
@@ -324,6 +669,7 @@ object NuvioClient {
         payload: PlayPayload,
         callback: (Video) -> Unit,
     ): Boolean = withContext(Dispatchers.IO) {
+        val startedAt = System.currentTimeMillis()
         fetchLog[scraper.id] = mutableListOf()
         consoleLog[scraper.id] = emptyList()
         val code = try {
@@ -340,132 +686,154 @@ object NuvioClient {
         // Certains bundles contiennent des expressions régulières très profondes.
         // La pile standard d'un worker ART/JVM peut déborder pendant leur compilation,
         // d'où ce thread court à pile dédiée (2 Mio) pour tout le cycle Rhino.
-        runOnRhinoThread(scraper.id) rhino@{
-            currentScraper.set(scraper.id)
-            val cx = try {
-                RhinoContext.enter()
-            } catch (t: Throwable) {
-                lastResults[scraper.id] = "✗ moteur: " + (t.message?.take(80) ?: t::class.simpleName.orEmpty())
-                currentScraper.remove()
-                return@rhino false
-            }
-            var scopeRef: Scriptable? = null
-            try {
-                cx.optimizationLevel = -1 // interprété : compatible ART/Android
-                cx.languageVersion = RhinoContext.VERSION_ES6
-
-                // IMPORTANT : TopLevel() active le cache des builtins (cacheBuiltins) :
-                // sans lui, le prototype des fonctions génératrices n'est pas initialisé
-                // et les bundles transpilés (babel) échouent en « Cannot find function apply ».
-                val scope = cx.initStandardObjects(com.frunified.rhino.TopLevel())
-                scopeRef = scope
-                // Le dex Android ne transporte ni META-INF/services ni .properties :
-                // sans cela RegExp et les messages Rhino sont introuvables (cf. installRuntime).
-                installRuntime(cx, scope)
-                cx.evaluateString(scope, JS_ENV, "prelude", 1, null)
-                injectEnv(scope)
-
-                // module.exports / global.getStreams : les deux formats de sortie
-                val module = cx.newObject(scope)
-                val exports = cx.newObject(scope)
-                module.put("exports", module, exports)
-                scope.put("module", scope, module)
-                scope.put("exports", scope, exports)
-
-                // fetch, b64 et URL sont fournis par Kotlin
-                scope.put("fetch", scope, FetchFunction())
-                scope.put("__b64Encode", scope, B64Function(encode = true))
-                scope.put("__b64Decode", scope, B64Function(encode = false))
-
+        val acceptingLinks = AtomicBoolean(true)
+        try {
+            runOnRhinoThread(scraper.id) rhino@{
+                currentScraper.set(scraper.id)
+                val cx = try {
+                    RhinoContext.enter()
+                } catch (t: Throwable) {
+                    lastResults[scraper.id] = "✗ moteur: " + (t.message?.take(80) ?: t::class.simpleName.orEmpty())
+                    currentScraper.remove()
+                    return@rhino false
+                }
+                var scopeRef: Scriptable? = null
                 try {
-                    cx.evaluateString(scope, code, scraper.id, 1, null)
-                } catch (t: Throwable) {
-                    lastResults[scraper.id] = "✗ erreur JS : " + jsError(code, t) + diagSuffix(scraper.id)
-                    return@rhino false
-                }
+                    cx.optimizationLevel = -1 // interprété : compatible ART/Android
+                    cx.languageVersion = RhinoContext.VERSION_ES6
 
-                // Récupère getStreams : module.exports.getStreams OU global.getStreams
-                var fn: Any? = null
-                runCatching {
-                    val exported = (module.get("exports", module) as? Scriptable) ?: scope
-                    fn = exported.get("getStreams", exported)
-                }
-                if (fn == null || fn == Scriptable.NOT_FOUND) {
-                    runCatching { fn = scope.get("getStreams", scope) }
-                }
-                if (fn == null || fn == Scriptable.NOT_FOUND || fn !is com.frunified.rhino.Callable) {
-                    lastResults[scraper.id] = "✗ getStreams introuvable"
-                    return@rhino false
-                }
+                    // IMPORTANT : TopLevel() active le cache des builtins (cacheBuiltins) :
+                    // sans lui, le prototype des fonctions génératrices n'est pas initialisé
+                    // et les bundles transpilés (babel) échouent en « Cannot find function apply ».
+                    val scope = cx.initStandardObjects(com.frunified.rhino.TopLevel())
+                    scopeRef = scope
+                    // Le dex Android ne transporte ni META-INF/services ni .properties :
+                    // sans cela RegExp et les messages Rhino sont introuvables (cf. installRuntime).
+                    installRuntime(cx, scope)
+                    cx.evaluateString(scope, JS_ENV, "prelude", 1, null)
+                    injectEnv(scope)
 
-                val args = arrayOf<Any?>(
-                    cx.evaluateString(scope, tmdbId.toString(), "n", 1, null),
-                    cx.evaluateString(scope, JSONObject.quote(mediaType), "s", 1, null),
-                    cx.evaluateString(scope, season.toString(), "n", 1, null),
-                    cx.evaluateString(scope, episode.toString(), "n", 1, null),
-                )
+                    // module.exports / global.getStreams : les deux formats de sortie
+                    val module = cx.newObject(scope)
+                    val exports = cx.newObject(scope)
+                    module.put("exports", module, exports)
+                    scope.put("module", scope, module)
+                    scope.put("exports", scope, exports)
 
-                var result: Any? = try {
-                    (fn as com.frunified.rhino.Callable).call(cx, scope, scope, args)
-                } catch (t: Throwable) {
-                    lastResults[scraper.id] = "✗ appel : " + jsError(code, t) + diagSuffix(scraper.id)
-                    return@rhino false
-                }
+                    // fetch, b64 et URL sont fournis par Kotlin
+                    scope.put("fetch", scope, FetchFunction())
+                    scope.put("__b64Encode", scope, B64Function(encode = true))
+                    scope.put("__b64Decode", scope, B64Function(encode = false))
 
-                // Fait avancer les timers et les chaînes de promesses synchrones
-                var guard = 0
-                while (timerCount(cx, scope) > 0 && guard++ < 80) {
-                    drain(cx, scope)
-                }
-                drain(cx, scope)
-
-                // Si le résultat est notre promesse, on lit sa valeur
-                val resultObj = result as? Scriptable
-                if (resultObj != null &&
-                    runCatching {
-                        ScriptableObject.hasProperty(resultObj, "__settled")
-                    }.getOrDefault(false)
-                ) {
-                    if (ScriptableObject.getProperty(resultObj, "__rejected") == java.lang.Boolean.TRUE) {
-                        val rej = ScriptableObject.getProperty(resultObj, "__value")
-                        lastResults[scraper.id] =
-                            "✗ rejet : " + (rej?.toString()?.take(80) ?: "inconnu") + diagSuffix(scraper.id)
+                    val compatibleCode = transpileForOf(code)
+                    try {
+                        cx.evaluateString(scope, compatibleCode, scraper.id, 1, null)
+                    } catch (t: Throwable) {
+                        lastResults[scraper.id] = "✗ erreur JS : " + jsError(compatibleCode, t) + diagSuffix(scraper.id)
                         return@rhino false
                     }
-                    result = ScriptableObject.getProperty(resultObj, "__value")
-                }
 
-                val streams = asArray(cx, scope, result)
-                if (streams == null) {
-                    lastResults[scraper.id] = "✗ résultat non reconnu" + diagSuffix(scraper.id)
-                    return@rhino false
-                }
-                var emitted = false
-                var count = 0
-                val maxHere = FrSettings.nuvioMaxPerScraper
-
-                for (i in 0 until
+                    // Récupère getStreams : module.exports.getStreams OU global.getStreams
+                    var fn: Any? = null
                     runCatching {
-                        RhinoContext.toNumber(ScriptableObject.getProperty(streams, "length")).toInt()
-                    }.getOrDefault(0)) {
-                    if (maxHere > 0 && count >= maxHere) break
-                    val obj = ScriptableObject.getProperty(streams, i) as? Scriptable ?: continue
-                    val link = toLink(scope, scraper.name, payload, obj) ?: continue
-                    emitted = true
-                    count++
-                    callback(link)
+                        val exported = (module.get("exports", module) as? Scriptable) ?: scope
+                        fn = exported.get("getStreams", exported)
+                    }
+                    if (fn == null || fn == Scriptable.NOT_FOUND) {
+                        runCatching { fn = scope.get("getStreams", scope) }
+                    }
+                    if (fn == null || fn == Scriptable.NOT_FOUND || fn !is com.frunified.rhino.Callable) {
+                        lastResults[scraper.id] = "✗ getStreams introuvable"
+                        return@rhino false
+                    }
+
+                    val args = arrayOf<Any?>(
+                        cx.evaluateString(scope, tmdbId.toString(), "n", 1, null),
+                        cx.evaluateString(scope, JSONObject.quote(mediaType), "s", 1, null),
+                        cx.evaluateString(scope, season.toString(), "n", 1, null),
+                        cx.evaluateString(scope, episode.toString(), "n", 1, null),
+                    )
+
+                    var result: Any? = try {
+                        (fn as com.frunified.rhino.Callable).call(cx, scope, scope, args)
+                    } catch (t: Throwable) {
+                        lastResults[scraper.id] = "✗ appel : " + jsError(code, t) + diagSuffix(scraper.id)
+                        return@rhino false
+                    }
+
+                    // Fait avancer les timers et les chaînes de promesses synchrones
+                    var guard = 0
+                    while (timerCount(cx, scope) > 0 && guard++ < 80) {
+                        drain(cx, scope)
+                    }
+                    drain(cx, scope)
+
+                    // Si le résultat est notre promesse, on lit sa valeur
+                    val resultObj = result as? Scriptable
+                    if (resultObj != null &&
+                        runCatching {
+                            ScriptableObject.hasProperty(resultObj, "__settled")
+                        }.getOrDefault(false)
+                    ) {
+                        if (ScriptableObject.getProperty(resultObj, "__rejected") == java.lang.Boolean.TRUE) {
+                            val rej = ScriptableObject.getProperty(resultObj, "__value")
+                            lastResults[scraper.id] =
+                                "✗ rejet : " + (rej?.toString()?.take(80) ?: "inconnu") + diagSuffix(scraper.id)
+                            return@rhino false
+                        }
+                        result = ScriptableObject.getProperty(resultObj, "__value")
+                    }
+
+                    val streams = asArray(cx, scope, result)
+                    if (streams == null) {
+                        lastResults[scraper.id] = "✗ résultat non reconnu" + diagSuffix(scraper.id)
+                        return@rhino false
+                    }
+                    var emitted = false
+                    var count = 0
+                    var rejected = 0
+                    val maxHere = FrSettings.nuvioMaxPerScraper
+
+                    for (i in 0 until
+                        runCatching {
+                            RhinoContext.toNumber(ScriptableObject.getProperty(streams, "length")).toInt()
+                        }.getOrDefault(0)) {
+                        if (maxHere > 0 && count >= maxHere) break
+                        val obj = ScriptableObject.getProperty(streams, i) as? Scriptable ?: continue
+                        val link = toLink(scope, scraper.name, payload, obj) ?: continue
+                        val deniedStatus = deniedStreamStatus(link)
+                        if (deniedStatus != null) {
+                            rejected++
+                            continue
+                        }
+                        emitted = true
+                        count++
+                        if (acceptingLinks.get()) callback(link)
+                    }
+                    lastResults[scraper.id] = if (emitted) {
+                        "✓ $count lien(s)" + (if (rejected > 0) " · $rejected refusé(s)" else "")
+                    } else {
+                        "✓ 0 lien" +
+                            (if (rejected > 0) " · $rejected refusé(s)" else "") +
+                            diagSuffix(scraper.id)
+                    }
+                    emitted
+                } catch (t: Throwable) {
+                    // un scrapeur qui plante ne doit jamais faire planter la lecture
+                    lastResults[scraper.id] =
+                        "✗ interne: " + (t.message?.take(80) ?: t::class.simpleName.orEmpty()) + diagSuffix(scraper.id)
+                    false
+                } finally {
+                    captureConsole(scopeRef, scraper.id)
+                    RhinoContext.exit()
+                    currentScraper.remove()
                 }
-                lastResults[scraper.id] = if (emitted) "✓ $count lien(s)" else "✓ 0 lien"
-                emitted
-            } catch (t: Throwable) {
-                // un scrapeur qui plante ne doit jamais faire planter la lecture
-                lastResults[scraper.id] =
-                    "✗ interne: " + (t.message?.take(80) ?: t::class.simpleName.orEmpty()) + diagSuffix(scraper.id)
-                false
-            } finally {
-                captureConsole(scopeRef, scraper.id)
-                RhinoContext.exit()
-                currentScraper.remove()
+            }
+        } finally {
+            acceptingLinks.set(false)
+            val elapsed = System.currentTimeMillis() - startedAt
+            lastResults[scraper.id]?.let { result ->
+                lastResults[scraper.id] = "$result · ${elapsed}ms"
             }
         }
     }
@@ -479,14 +847,21 @@ object NuvioClient {
             name,
             RHINO_STACK_BYTES,
         )
+        worker.isDaemon = true
         return try {
             worker.start()
-            worker.join()
-            outcome.get()?.getOrElse { failure ->
-                lastResults[id] = "✗ thread Rhino: " +
-                    (failure.message?.take(80) ?: failure::class.simpleName.orEmpty())
+            worker.join(SCRAPER_TIMEOUT_MS)
+            if (worker.isAlive) {
+                lastResults[id] = "✗ délai dépassé (${SCRAPER_TIMEOUT_MS / 1_000}s)"
+                worker.interrupt()
                 false
-            } ?: false
+            } else {
+                outcome.get()?.getOrElse { failure ->
+                    lastResults[id] = "✗ thread Rhino: " +
+                        (failure.message?.take(80) ?: failure::class.simpleName.orEmpty())
+                    false
+                } ?: false
+            }
         } catch (interrupted: InterruptedException) {
             worker.interrupt()
             Thread.currentThread().interrupt()
@@ -571,8 +946,11 @@ object NuvioClient {
 
         val url = prop("url", "file", "videoUrl", "src")?.takeIf { it.startsWith("http") }
         val infoHash = prop("infoHash")?.takeIf { Regex("^[a-fA-F0-9]{40}$").matches(it) }
-        val label = prop("name", "title", "fileName", "label", "description") ?: scraperName
-        val language = prop("language", "lang")?.uppercase()
+        val providerLabel = prop("name")
+        val label = prop("title", "label", "description", "fileName", "name") ?: scraperName
+        val quality = prop("quality", "resolution")
+        val language = prop("language", "lang")
+        val audio = audioTag(listOfNotNull(providerLabel, label, language).joinToString(" "))
 
         val headers = runCatching {
             val h = ScriptableObject.getProperty(obj, "headers")
@@ -590,12 +968,18 @@ object NuvioClient {
             }
         }.getOrNull()?.takeIf { it.isNotEmpty() }
 
-        val title = "$scraperName • $label" + language?.let { " • $it" }.orEmpty()
+        val resolution = qualityOf("$label $quality")
+        val title = buildList {
+            add(scraperName)
+            add(label)
+            if (audio != null && audioTag(label) == null) add(audio)
+            if (!quality.isNullOrBlank() && qualityOf(label) == null) add(quality)
+        }.distinct().joinToString(" • ")
         return when {
             url != null -> Video(
                 videoUrl = url,
                 videoTitle = title,
-                resolution = qualityOf("$label $language"),
+                resolution = resolution,
                 headers = headers?.toOkHttpHeaders(),
                 preferred = StremioClient.isPreferred(title),
             )
@@ -607,7 +991,7 @@ object NuvioClient {
                 Video(
                     videoUrl = magnet,
                     videoTitle = "Torrent • $title",
-                    resolution = qualityOf("$label $language"),
+                    resolution = resolution,
                     preferred = StremioClient.isPreferred(title),
                 )
             }
@@ -633,7 +1017,27 @@ object NuvioClient {
         return if (count > 0) builder.build() else null
     }
 
-    private fun qualityOf(text: String): Int? = StremioClient.qualityOf(text)
+    private fun qualityOf(text: String): Int? = StremioClient.qualityOf(text) ?: when {
+        text.contains("uhd", true) -> 2160
+        text.contains("fullhd", true) || text.contains("full hd", true) -> 1080
+        Regex("(^|[^A-Z])HD([^A-Z]|$)").containsMatchIn(text.uppercase()) -> 720
+        Regex("(^|[^A-Z])SD([^A-Z]|$)").containsMatchIn(text.uppercase()) -> 480
+        else -> null
+    }
+
+    private fun audioTag(text: String): String? {
+        val upper = text.uppercase()
+        return when {
+            Regex("(^|[^A-Z0-9])VOSTFR([^A-Z0-9]|$)").containsMatchIn(upper) -> "VOSTFR"
+            Regex("(^|[^A-Z0-9])VOSTF?([^A-Z0-9]|$)").containsMatchIn(upper) -> "VOSTFR"
+            Regex("(^|[^A-Z0-9])VFQ([^A-Z0-9]|$)").containsMatchIn(upper) -> "VFQ"
+            Regex("(^|[^A-Z0-9])VFF([^A-Z0-9]|$)").containsMatchIn(upper) -> "VFF"
+            upper.contains("TRUEFRENCH") -> "VF"
+            Regex("(^|[^A-Z0-9])VF([^A-Z0-9]|$)").containsMatchIn(upper) -> "VF"
+            Regex("(^|[^A-Z0-9])MULTI([^A-Z0-9]|$)").containsMatchIn(upper) -> "MULTI"
+            else -> null
+        }
+    }
 
     // ------------------------------------------------- ID TMDB (animé)
 
@@ -688,6 +1092,101 @@ object NuvioClient {
 
     // ------------------------------------------------------- réseau
 
+    private data class StreamProbe(val status: Int, val body: String?)
+
+    /**
+     * Écarte avant affichage un lien que le CDN refuse déjà (notamment les 403
+     * FSVid/Movix). Pour HLS, sonde aussi le premier segment sans le télécharger.
+     * Une panne de sonde (status 0) ne supprime pas le lien : seuls les refus
+     * explicites sont éliminés.
+     */
+    internal fun acceptsStream(video: Video): Boolean = deniedStreamStatus(video) == null
+
+    private fun deniedStreamStatus(video: Video): Int? {
+        val initialUrl = video.videoUrl.takeIf { it.startsWith("http") } ?: return null
+        val requestHeaders = linkedMapOf<String, String>()
+        video.headers?.names()?.forEach { name ->
+            video.headers?.get(name)?.let { requestHeaders[name] = it }
+        }
+        val lower = initialUrl.lowercase()
+        if (!lower.contains(".m3u8") && !lower.contains("/hls")) {
+            val probe = probeRequest(initialUrl, requestHeaders, readBody = false)
+            recordProbe(initialUrl, probe.status)
+            return probe.status.takeIf(::isDeniedStatus)
+        }
+
+        var playlistUrl = initialUrl
+        repeat(2) {
+            val playlist = probeRequest(playlistUrl, requestHeaders, readBody = true)
+            recordProbe(playlistUrl, playlist.status)
+            if (isDeniedStatus(playlist.status)) return playlist.status
+            if (playlist.status !in 200..399 || playlist.body.isNullOrBlank()) return null
+            val next = playlist.body.lineSequence()
+                .map(String::trim)
+                .firstOrNull { it.isNotBlank() && !it.startsWith('#') }
+                ?: return null
+            val resolved = runCatching { URL(URL(playlistUrl), next).toString() }.getOrNull() ?: return null
+            if (resolved.lowercase().contains(".m3u8")) {
+                playlistUrl = resolved
+            } else {
+                val segment = probeRequest(resolved, requestHeaders, readBody = false)
+                recordProbe(resolved, segment.status)
+                return segment.status.takeIf(::isDeniedStatus)
+            }
+        }
+        return null
+    }
+
+    private fun isDeniedStatus(status: Int): Boolean = status in setOf(401, 403, 404, 410, 429, 451)
+
+    private fun recordProbe(url: String, status: Int) {
+        currentScraper.get()?.let { id ->
+            runCatching {
+                val host = URL(url).host.ifBlank { "?" }
+                val list = fetchLog.computeIfAbsent(id) { mutableListOf() }
+                list.add("PROBE $host → $status")
+                while (list.size > 40) list.removeAt(0)
+            }
+        }
+    }
+
+    private fun probeRequest(url: String, headers: Map<String, String>, readBody: Boolean): StreamProbe {
+        val conn = runCatching { URL(url).openConnection() as HttpURLConnection }.getOrNull()
+            ?: return StreamProbe(0, null)
+        return try {
+            conn.requestMethod = "GET"
+            conn.connectTimeout = PROBE_TIMEOUT_MS
+            conn.readTimeout = PROBE_TIMEOUT_MS
+            conn.instanceFollowRedirects = true
+            conn.setRequestProperty("User-Agent", FrSettings.nuvioUserAgent.ifBlank { FrSettings.DEFAULT_USER_AGENT })
+            conn.setRequestProperty("Accept", if (readBody) "application/vnd.apple.mpegurl,*/*" else "*/*")
+            conn.setRequestProperty("Accept-Encoding", "identity")
+            headers.forEach { (name, value) -> runCatching { conn.setRequestProperty(name, value) } }
+            if (!readBody) conn.setRequestProperty("Range", "bytes=0-1023")
+
+            val status = conn.responseCode
+            val body = if (readBody && status in 200..399) {
+                conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                    buildString {
+                        while (length < PROBE_BODY_LIMIT) {
+                            val line = reader.readLine() ?: break
+                            appendLine(line)
+                            if (line.isNotBlank() && !line.trimStart().startsWith('#')) break
+                        }
+                    }
+                }
+            } else {
+                runCatching { conn.errorStream?.close() }
+                null
+            }
+            StreamProbe(status, body)
+        } catch (_: Throwable) {
+            StreamProbe(0, null)
+        } finally {
+            runCatching { conn.disconnect() }
+        }
+    }
+
     private fun httpGet(url: String, extraHeaders: Map<String, String>): String =
         doHttp(url, "GET", extraHeaders, null).second
 
@@ -705,7 +1204,7 @@ object NuvioClient {
         try {
             conn.requestMethod = method.uppercase()
             conn.connectTimeout = NETWORK_TIMEOUT_MS
-            conn.readTimeout = 90_000
+            conn.readTimeout = 25_000
             conn.instanceFollowRedirects = true
             conn.setRequestProperty(
                 "User-Agent",
@@ -759,7 +1258,8 @@ object NuvioClient {
         val scraper = runCatching { scrapers().firstOrNull { it.id == id } }.getOrNull()
             ?: return "✗ source introuvable"
         val types = scraper.supportedTypes.map { it.lowercase() }
-        val animeLike = types.any { it.contains("anime") || it.contains("cartoon") } ||
+        val animeLike = id in ANIME_FOCUSED_IDS ||
+            types.any { it.contains("anime") || it.contains("cartoon") } ||
             types.isEmpty() ||
             scraper.name.lowercase().contains("anime") ||
             scraper.name.lowercase().contains("sama") ||
@@ -806,6 +1306,7 @@ object NuvioClient {
         var anyOk = false
         for (tc in cases) {
             val links = java.util.concurrent.CopyOnWriteArrayList<Video>()
+            val startedAt = System.currentTimeMillis()
             // Les tests partent TOUS en parallèle depuis l'écran de réglages ;
             // sur un réseau mobile, 26 moteurs Rhino simultanés saturaient tout
             // et chaque scrapeur dépassait son timeout. Sémaphore dédié (2 max) :
@@ -817,12 +1318,13 @@ object NuvioClient {
                     } ?: false
                 }
             }.getOrDefault(false)
+            val elapsed = System.currentTimeMillis() - startedAt
             if (ok) {
                 anyOk = true
-                out.append("${tc.label}: ${links.size} lien(s)")
+                out.append("${tc.label}: ${links.size} lien(s) en ${elapsed}ms")
             } else {
                 val diag = diagnostics()[scraper.id] ?: "aucun résultat (timeout ?)"
-                out.append(if (diag.startsWith("✓")) "${tc.label}: 0 lien" else "${tc.label}: ✗ $diag")
+                out.append(if (diag.startsWith("✓")) "${tc.label}: $diag" else "${tc.label}: ✗ $diag")
             }
         }
         val txt = out.toString()
@@ -950,6 +1452,24 @@ function __spread() {
     else a.push(v);
   }
   return a;
+}
+function __frToArray(value) {
+  if (value == null) return [];
+  if (typeof value.length === 'number') return value;
+  var out = [];
+  try {
+    if (typeof Symbol !== 'undefined' && Symbol.iterator && typeof value[Symbol.iterator] === 'function') {
+      var iterator = value[Symbol.iterator](), step;
+      while (!(step = iterator.next()).done) out.push(step.value);
+      return out;
+    }
+  } catch (e) {}
+  try {
+    if (typeof value.forEach === 'function') {
+      value.forEach(function (entry) { out.push(entry); });
+    }
+  } catch (e) {}
+  return out;
 }
 
 // ----- Promise minimale (chaînes .then synchrones + helpers babel asyncToGenerator)

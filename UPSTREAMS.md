@@ -1,34 +1,37 @@
 # Suivi des projets amont
 
-Dernière vérification : **6 septembre 2026**. Les références ci-dessous correspondent aux têtes distantes observées lors de la validation de cette version.
+Dernière vérification : **6 septembre 2026**. Les références sont les têtes distantes observées pendant la validation de FR Unifié 16.6.
 
-| Projet | Référence vérifiée | Utilisation dans FR Unifié |
+| Projet | Référence vérifiée | Utilisation |
 |---|---:|---|
-| [cloudstream-fr-unified](https://github.com/j97970293-lang/cloudstream-fr-unified) | `a406aeabb120` | Base fonctionnelle portée vers l’API Aniyomi v16 : catalogue commun, modèles de lecture et exécution Nuvio. |
-| [Gowaru/gowaru-nuvio-providers](https://github.com/Gowaru/gowaru-nuvio-providers) | `c3ce6f43a1ba` | Dépôt Nuvio français principal, chargé dynamiquement ; 26 providers lors du contrôle. |
-| [Snixi92/nuvio-french-providers](https://github.com/Snixi92/nuvio-french-providers) | `78472419ad7c` | Addon Stremio français proposé par défaut ; Nakios, Purstream, Movix, ToFlix, FrenchStream, Nakastream et Vstream. |
-| [bluecxt/anime-extensions-french](https://github.com/bluecxt/anime-extensions-french) | `d6eddc7f413c` | Référence Aniyomi/AniZen française et contrôle de compatibilité des sources animées. |
-| [Nikola17/cloudstream-frenchstream](https://github.com/Nikola17/cloudstream-frenchstream) | `3bc8570aeacc` | Dépôt CloudStream suivi et importable ; providers compatibles associés à leurs moteurs Nuvio. |
-| [blizzx4644/Movix-cloudstream](https://github.com/blizzx4644/Movix-cloudstream) | `ac9a9c9b8348` | Dépôt CloudStream Movix suivi et passerelle vers le provider Nuvio `movix`. |
-| [Kraptor123/Cs-Karma](https://github.com/Kraptor123/Cs-Karma) | `0467f84944bd` | Dépôt CloudStream suivi ; associations automatiques des providers connus. |
-| [mouradchaouche/cloudstream-frenchrepo](https://github.com/mouradchaouche/cloudstream-frenchrepo) | `0da82ea5ee1c` | Dépôt CloudStream français suivi ; associations Wiflix/Flemmix, French Anime, Coflix, FsMirror/FrenchStream, etc. |
-| [mouradchaouche/cs-repos](https://github.com/mouradchaouche/cs-repos) | `2328e06772a7` | Agrégateur contrôlé pour retrouver les dépôts CloudStream publics du même auteur. |
+| [Secozzi/aniyomi-extensions](https://github.com/Secozzi/aniyomi-extensions) | `da265eff8291` | Référence Aniyomi demandée, en particulier pour le contrat Stremio : ressources, catalogues, métadonnées, épisodes et flux. |
+| [Gowaru/gowaru-nuvio-providers](https://github.com/Gowaru/gowaru-nuvio-providers) | `c3ce6f43a1ba` | Dépôt Nuvio français principal. |
+| [D3adlyRocket/Anime-Nuvio](https://github.com/D3adlyRocket/Anime-Nuvio) | `8b2ff46e87b2` | Providers anime multilingues. |
+| [yoruix/nuvio-providers](https://github.com/yoruix/nuvio-providers) | `cb4bf144217d` | Providers films, séries et animés internationaux. |
+| [phisher98/phisher-nuvio-providers](https://github.com/phisher98/phisher-nuvio-providers) | `91cc7194f2b8` | Providers multilingues supplémentaires. |
+| [fmustafayaman/turkish-nuvio](https://github.com/fmustafayaman/turkish-nuvio) | `e5a31058b4a1` | Providers turcs. |
+| [Snixi92/nuvio-french-providers](https://github.com/Snixi92/nuvio-french-providers) | `78472419ad7c` | Addon Stremio de flux français proposé par défaut. |
+| [TMDB Addon / ElfHosted](https://tmdb.elfhosted.com/) | service HTTP | Catalogues Stremio localisés, métadonnées, vidéos et pagination. |
+| [cloudstream-fr-unified](https://github.com/j97970293-lang/cloudstream-fr-unified) | `a406aeabb120` | Origine historique de certaines logiques de catalogue et de l’environnement Nuvio ; aucune intégration CloudStream active dans 16.6. |
 
 ## Politique d’intégration
 
-- Les manifests et bundles **Nuvio** sont téléchargés au moment de l’utilisation ; ils ne sont pas incorporés à l’APK.
-- Les addons **Stremio** sont interrogés via leur contrat HTTP `manifest.json`, `stream` et `subtitles`.
-- Les binaires **CloudStream `.cs3` ne sont pas exécutables dans Aniyomi**. L’import d’un `repo.json` inventorie les plugins et active les scrapeurs Nuvio équivalents lorsque leur identité est reconnue.
-- Les dépôts CloudStream sans licence explicite ne sont pas recopiés dans ce dépôt. Seuls leurs métadonnées publiques et les noms nécessaires aux associations sont lus à l’exécution.
-- Les références `HEAD` configurées permettent de recevoir les mises à jour amont sans republier l’APK, sous réserve que le format du manifest reste compatible.
+- Les manifests et bundles **Nuvio** sont téléchargés à l’exécution ; ils ne sont pas incorporés à l’APK.
+- Les addons **Stremio** sont interrogés via leurs ressources déclarées (`catalog`, `meta`, `stream`, `subtitles`).
+- Les entrées sont filtrées par ressource, type et préfixes d’identifiant déclarés par le manifest.
+- Les fichiers CloudStream `.cs3` et les `repo.json` ne sont plus importés ni suivis par l’extension.
+- Les références `HEAD` permettent de recevoir les mises à jour amont sans republier l’APK, sous réserve que leur format reste compatible.
+- Chaque projet, bundle et service reste soumis à ses propres conditions et peut devenir indisponible indépendamment de FR Unifié.
 
-## Validation réseau de référence
+## État des validations réseau
 
 Au 6 septembre 2026 :
 
-- Gowaru/Nuvio : test réel réussi sur *One Piece*, avec **4 liens** obtenus via Anime-Sama ;
-- import réel : Nuvio, Stremio et les quatre dépôts CloudStream détectés correctement ; les quatre dépôts CloudStream ont au moins une passerelle reconnue ;
-- Snixi/Stremio : manifest, route `stream` et lecture réelle validés ; la dernière sonde a obtenu **2 flux** avec leurs en-têtes HTTP. Le service avait renvoyé temporairement des listes vides lors de contrôles précédents, ce qui confirme qu’il peut être intermittent ;
-- le parseur Stremio est aussi testé hors réseau pour les en-têtes HTTP, la qualité, la langue et le filtrage du faux flux `/troll/master.m3u8`.
+- le chemin Stremio localisé a chargé un manifest TMDB, recherché **One Piece**, chargé sa fiche, ses épisodes et interrogé ses flux ;
+- le compteur Jikan paginé a atteint la dernière page de **One Piece** et ne retombe plus artificiellement à 24 épisodes ;
+- les sources françaises recommandées restent couvertes par les sondes Kotlin/Rhino ; les liens refusés explicitement en HTTP 403 sont écartés ;
+- les bundles internationaux utilisant `for…of` passent désormais par une transformation compatible avec Rhino ; le bundle turc `fullhdfilm` franchit la compilation et atteint son site, qui répondait 403 pendant la validation ;
+- les providers Yoruix `vixsrc` et `vidlink` ont franchi le chargement du manifest, l’évaluation Rhino et l’appel TMDB, mais n’ont pas renvoyé de lien pour la sonde choisie ;
+- certains bundles Phisher attendent encore un module Node/Cheerio absent du runtime Android ; ils restent sélectionnables, mais leur indisponibilité ne bloque pas la publication.
 
-La disponibilité des sites et services tiers peut changer indépendamment de l’extension.
+Ces observations sont un état ponctuel, pas une garantie de disponibilité future.

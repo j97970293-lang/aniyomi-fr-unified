@@ -17,8 +17,8 @@ object TmdbCatalog {
     private fun url(path: String, params: Map<String, String> = emptyMap()): String {
         val all = linkedMapOf(
             "api_key" to FrSettings.tmdbApiKey,
-            "language" to "fr-FR",
-            "region" to "FR",
+            "language" to FrSettings.catalogLanguage,
+            "region" to FrSettings.catalogRegion,
             "include_adult" to "false",
         )
         all.putAll(params)

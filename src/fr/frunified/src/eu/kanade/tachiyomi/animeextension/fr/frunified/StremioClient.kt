@@ -25,6 +25,9 @@ object StremioClient {
         .removeSuffix("/")
 
     private suspend fun stremioId(payload: PlayPayload): Pair<String, String>? {
+        if (!payload.stremioType.isNullOrBlank() && !payload.stremioId.isNullOrBlank()) {
+            return payload.stremioType to payload.stremioId
+        }
         val imdb = TmdbCatalog.imdbId(payload) ?: return null
         return if (payload.isSeries) {
             "series" to "$imdb:${payload.season ?: 1}:${payload.episode ?: 1}"
@@ -36,11 +39,35 @@ object StremioClient {
     suspend fun streams(payload: PlayPayload): List<Video> = coroutineScope {
         if (!FrSettings.useStremio || FrSettings.stremioUrls.isEmpty()) return@coroutineScope emptyList()
         val (type, id) = stremioId(payload) ?: return@coroutineScope emptyList()
-        FrSettings.stremioUrls.distinct()
-            .filter(FrSettings::isStremioEnabled)
-            .map { addon ->
-                async { runCatching { streamsFrom(addon, type, id, payload) }.getOrDefault(emptyList()) }
-            }.awaitAll().flatten()
+        val jobs = StremioCatalog.streamAddonBases(type, id).map { addon ->
+            async { runCatching { streamsFrom(addon, type, id, payload) }.getOrDefault(emptyList()) }
+        } +
+            listOfNotNull(
+                payload.stremioAddon?.takeIf { payload.stremioId == payload.stremioMetaId }?.let { addon ->
+                    async {
+                        runCatching {
+                            inlineMetaStreams(addon, type, payload.stremioMetaId ?: id, payload)
+                        }.getOrDefault(emptyList())
+                    }
+                },
+            )
+        jobs.awaitAll().flatten()
+            .distinctBy { "${it.videoUrl}|${it.videoTitle}" }
+            .let { videos ->
+                val limit = FrSettings.stremioMaxStreams
+                if (limit > 0) videos.take(limit) else videos
+            }
+    }
+
+    private suspend fun inlineMetaStreams(
+        addon: String,
+        type: String,
+        id: String,
+        payload: PlayPayload,
+    ): List<Video> {
+        val meta = FrRuntime.getJson("${base(addon)}/meta/$type/$id.json").optJSONObject("meta")
+            ?: return emptyList()
+        return parseStreams(meta, addon, payload).filter(NuvioClient::acceptsStream)
     }
 
     private suspend fun streamsFrom(
@@ -52,7 +79,7 @@ object StremioClient {
         FrRuntime.getJson("${base(addon)}/stream/$type/$id.json"),
         addon,
         payload,
-    )
+    ).filter(NuvioClient::acceptsStream)
 
     internal fun parseStreams(root: JSONObject, addon: String, payload: PlayPayload): List<Video> {
         val array = root.optJSONArray("streams") ?: return emptyList()

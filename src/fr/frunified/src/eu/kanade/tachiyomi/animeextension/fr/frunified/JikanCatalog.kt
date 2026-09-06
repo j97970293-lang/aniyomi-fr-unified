@@ -1,19 +1,27 @@
 package eu.kanade.tachiyomi.animeextension.fr.frunified
 
+import kotlinx.coroutines.delay
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
 
 object JikanCatalog {
     private const val API = "https://api.jikan.moe/v4"
+    private const val EPISODE_CACHE_MS = 6 * 60 * 60 * 1000L
+    private val episodeCountCache = ConcurrentHashMap<String, Pair<Long, Int>>()
 
     private suspend fun fetch(path: String): JSONObject? =
         runCatching { FrRuntime.getJson("$API/$path") }.getOrNull()
 
     fun item(json: JSONObject): CatalogItem? {
         val id = json.optInt("mal_id").takeIf { it > 0 } ?: return null
-        val title = json.optString("title_english").takeIf { it.isNotBlank() && it != "null" }
-            ?: json.optString("title").takeIf(String::isNotBlank)
-            ?: return null
+        val title = if (FrSettings.catalogLanguage.startsWith("ja")) {
+            json.optString("title_japanese").takeIf { it.isNotBlank() && it != "null" }
+                ?: json.optString("title").takeIf(String::isNotBlank)
+        } else {
+            json.optString("title_english").takeIf { it.isNotBlank() && it != "null" }
+                ?: json.optString("title").takeIf(String::isNotBlank)
+        } ?: return null
         val original = json.optString("title").takeIf { it.isNotBlank() && !it.equals(title, true) }
         val type = json.optString("type")
         return CatalogItem(
@@ -49,6 +57,51 @@ object JikanCatalog {
 
     suspend fun details(id: String): JSONObject? = fetch("anime/$id/full")?.optJSONObject("data")
 
+    /**
+     * AniList et la fiche Jikan laissent `episodes` à null pour les séries en cours.
+     * L'endpoint paginé des épisodes expose cependant sa dernière page : deux
+     * requêtes suffisent donc pour retrouver le dernier numéro réellement publié.
+     */
+    suspend fun episodeCount(id: String): Int? {
+        val now = System.currentTimeMillis()
+        episodeCountCache[id]?.let { (expires, count) -> if (expires > now) return count }
+        val count = episodeCount(id) { path -> fetchEpisodePage(path) } ?: return null
+        episodeCountCache[id] = (now + EPISODE_CACHE_MS) to count
+        return count
+    }
+
+    internal suspend fun episodeCount(
+        id: String,
+        fetchPage: suspend (String) -> JSONObject?,
+    ): Int? {
+        val first = fetchPage("anime/$id/episodes?page=1") ?: return null
+        val lastPage = first.optJSONObject("pagination")?.optInt("last_visible_page", 1)
+            ?.coerceIn(1, 50) ?: 1
+        val last = if (lastPage == 1) {
+            first
+        } else {
+            // Ne jamais prendre la page 1 pour la dernière : cela mettrait en cache 100
+            // épisodes pour One Piece lorsqu'une seule requête Jikan est limitée.
+            fetchPage("anime/$id/episodes?page=$lastPage") ?: return null
+        }
+        val data = last.optJSONArray("data") ?: return null
+        val highestNumber = (0 until data.length()).maxOfOrNull { index ->
+            data.optJSONObject(index)?.optInt("mal_id", 0) ?: 0
+        }?.takeIf { it > 0 }
+        val count = highestNumber
+            ?: (((lastPage - 1) * 100) + data.length()).takeIf { it > 0 }
+            ?: return null
+        return count.takeIf { it in 1..5_000 }
+    }
+
+    private suspend fun fetchEpisodePage(path: String): JSONObject? {
+        repeat(3) { attempt ->
+            fetch(path)?.let { return it }
+            if (attempt < 2) delay(1_100L)
+        }
+        return null
+    }
+
     fun allTitles(data: JSONObject): List<String> {
         val base = listOf("title_english", "title", "title_japanese").mapNotNull { key ->
             data.optString(key).takeIf { it.isNotBlank() && it != "null" }
@@ -72,22 +125,38 @@ object AnimeCatalog {
             "top" -> "SCORE_DESC"
             else -> "POPULARITY_DESC"
         }
-        val aniList = runCatching { AniListCatalog.row(sort, page) }.getOrDefault(emptyList())
-        val jikan = aniList.ifEmpty {
-            runCatching { JikanCatalog.row(kind, page) }.getOrDefault(emptyList())
+        val aniList = if (FrSettings.useAniListCatalog) {
+            runCatching { AniListCatalog.row(sort, page) }.getOrDefault(emptyList())
+        } else {
+            emptyList()
         }
-        return jikan.ifEmpty {
+        val jikan = if (aniList.isEmpty() && FrSettings.useJikanCatalog) {
+            runCatching { JikanCatalog.row(kind, page) }.getOrDefault(emptyList())
+        } else {
+            aniList
+        }
+        return if (jikan.isEmpty() && FrSettings.useTmdbCatalog) {
             runCatching { TmdbCatalog.animeRow(kind, page) }.getOrDefault(emptyList())
+        } else {
+            jikan
         }
     }
 
     suspend fun search(query: String, page: Int): List<CatalogItem> {
-        val aniList = runCatching { AniListCatalog.search(query, page) }.getOrDefault(emptyList())
-        val jikan = aniList.ifEmpty {
-            runCatching { JikanCatalog.search(query, page) }.getOrDefault(emptyList())
+        val aniList = if (FrSettings.useAniListCatalog) {
+            runCatching { AniListCatalog.search(query, page) }.getOrDefault(emptyList())
+        } else {
+            emptyList()
         }
-        return jikan.ifEmpty {
+        val jikan = if (aniList.isEmpty() && FrSettings.useJikanCatalog) {
+            runCatching { JikanCatalog.search(query, page) }.getOrDefault(emptyList())
+        } else {
+            aniList
+        }
+        return if (jikan.isEmpty() && FrSettings.useTmdbCatalog) {
             runCatching { TmdbCatalog.animeSearch(query, page) }.getOrDefault(emptyList())
+        } else {
+            jikan
         }
     }
 }

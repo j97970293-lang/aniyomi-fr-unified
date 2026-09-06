@@ -7,13 +7,13 @@ import org.junit.Test
 
 class ExternalSourceImporterTest {
     @Test
-    fun detectsEachSupportedFamily() = runBlocking {
+    fun detectsNuvioAndEveryStremioResourceFamily() = runBlocking {
         val documents = mapOf(
             "https://example.test/nuvio.json" to """{"name":"Nuvio FR","scrapers":[]}""",
-            "https://example.test/stremio.json" to
-                """{"name":"Stremio FR","resources":[{"name":"stream","types":["movie"]}],"types":["movie"]}""",
-            "https://example.test/repo.json" to
-                """[{"internalName":"Movix"},{"internalName":"FrenchStream"},{"internalName":"Unknown"}]""",
+            "https://example.test/stream.json" to
+                """{"name":"Streams","resources":[{"name":"stream","types":["movie"]}],"types":["movie"]}""",
+            "https://example.test/catalog.json" to
+                """{"name":"Catalog","resources":["catalog","meta"],"catalogs":[]}""",
         )
         val fetch: suspend (String) -> String = { documents.getValue(it) }
 
@@ -23,38 +23,33 @@ class ExternalSourceImporterTest {
         )
         assertEquals(
             ExternalSourceImporter.Kind.STREMIO,
-            ExternalSourceImporter.inspect("https://example.test/stremio.json", fetch).kind,
+            ExternalSourceImporter.inspect("https://example.test/stream.json", fetch).kind,
         )
-        val cloudStream = ExternalSourceImporter.inspect("https://example.test/repo.json", fetch)
-        assertEquals(ExternalSourceImporter.Kind.CLOUDSTREAM, cloudStream.kind)
-        assertEquals(setOf("movix", "frenchstream"), cloudStream.nuvioIds)
-        assertEquals(3, cloudStream.pluginNames.size)
+        assertEquals(
+            ExternalSourceImporter.Kind.STREMIO,
+            ExternalSourceImporter.inspect("https://example.test/catalog.json", fetch).kind,
+        )
     }
 
     @Test
-    fun followsCloudStreamPluginListsFromGitHubRepositoryUrl() = runBlocking {
-        val root = "https://raw.githubusercontent.com/example/repository/HEAD/repo.json"
-        val list = "https://example.test/plugins.json"
-        val documents = mapOf(
-            root to """{"name":"CloudStream FR","pluginLists":["$list"]}""",
-            list to """[{"name":"Wiflix"},{"name":"Coflix"}]""",
-        )
+    fun githubRepositoryResolvesToNuvioManifest() = runBlocking {
+        val manifest = "https://raw.githubusercontent.com/example/repository/HEAD/manifest.json"
         val result = ExternalSourceImporter.inspect("https://github.com/example/repository") {
-            documents[it] ?: error("404")
+            if (it == manifest) """{"name":"Nuvio","scrapers":[]}""" else error("404")
         }
 
-        assertEquals(ExternalSourceImporter.Kind.CLOUDSTREAM, result.kind)
-        assertEquals(root, result.url)
-        assertEquals(setOf("flemmix", "coflix"), result.nuvioIds)
+        assertEquals(ExternalSourceImporter.Kind.NUVIO, result.kind)
+        assertEquals(manifest, result.url)
     }
 
     @Test
-    fun rejectsCloudStreamBinary() = runBlocking {
-        val failure = runCatching {
-            ExternalSourceImporter.inspect("https://example.test/plugin.cs3") { error("must not fetch") }
-        }.exceptionOrNull()
-
-        assertTrue(failure is IllegalArgumentException)
-        assertTrue(failure?.message.orEmpty().contains("repo.json"))
+    fun rejectsCloudStreamInputs() = runBlocking {
+        listOf("https://example.test/plugin.cs3", "https://example.test/repo.json").forEach { input ->
+            val failure = runCatching {
+                ExternalSourceImporter.inspect(input) { error("must not fetch") }
+            }.exceptionOrNull()
+            assertTrue(failure is IllegalArgumentException)
+            assertTrue(failure?.message.orEmpty().contains("CloudStream"))
+        }
     }
 }

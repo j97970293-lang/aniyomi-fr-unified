@@ -1,64 +1,100 @@
 # FR Unifié pour Aniyomi
 
-Port Aniyomi de l’extension CloudStream **FR Unifié**.
+**FR Unifié 16.6** est une extension Aniyomi autonome qui réunit catalogues, fiches, épisodes et sources de lecture dans une seule interface.
 
-L’extension affiche un catalogue unique et propre :
+## Fonctions principales
 
-- **TMDB en français** pour les films et séries ;
-- **AniList**, avec repli **MyAnimeList/Jikan**, puis TMDB si ces deux API sont temporairement indisponibles, pour les animés ;
-- recherche unifiée et dédoublonnée ;
-- saisons et épisodes TMDB ;
-- liens VF/VOSTFR récupérés en parallèle par les scrapeurs **Nuvio** configurables ;
-- addons **Stremio** configurables, avec conservation des en-têtes de lecture ;
-- import de dépôts **CloudStream** et association automatique de leurs providers compatibles à Nuvio ;
-- fenêtre multi-sélection pour activer ou désactiver chaque source ;
-- sous-titres externes, dont OpenSubtitles v3.
+- catalogues **TMDB**, **AniList**, **Jikan/MyAnimeList** et **Stremio** ;
+- activation indépendante de TMDB, AniList et Jikan, ou désactivation globale des catalogues principaux ;
+- choix d’un catalogue fourni par un addon Stremio ;
+- recherche, fiches, saisons et épisodes Stremio, y compris `meta.streams` et les flux TV directs ;
+- choix de l’ordre des moteurs : **Nuvio puis Stremio** ou **Stremio puis Nuvio** ;
+- sources Nuvio activables individuellement, issues de dépôts français et internationaux ;
+- langues de catalogue et de providers configurables ;
+- titres de flux indiquant autant que possible la langue (VF, VFF, VFQ, MULTI, VOSTFR), le lecteur et la qualité ;
+- transmission des en-têtes HTTP nécessaires au lecteur ;
+- contrôle léger des flux avant lecture et rejet des refus HTTP explicites, notamment les 403 ;
+- sous-titres externes Stremio/OpenSubtitles.
 
-## Différence importante avec la version CloudStream
+CloudStream n’est plus intégré : les fichiers `.cs3` et les `repo.json` sont refusés. Utilisez un manifest **Nuvio** ou **Stremio** directement exécutable.
 
-CloudStream expose la liste de ses providers chargés au plugin. Aniyomi charge au contraire chaque extension dans un APK/classloader isolé : une extension ne dispose pas d’une API stable pour appeler les autres extensions installées.
+## Correction des séries en cours
 
-Cette version ne tente donc pas une réflexion fragile sur Aniyomi. Elle conserve le même résultat côté utilisateur, mais récupère les liens directement avec :
+La version 16.6 ne limite plus une série à 24 épisodes lorsqu’AniList ne fournit pas de total définitif. Elle utilise, dans l’ordre disponible :
 
-1. les dépôts de scrapeurs Nuvio ;
-2. les addons Stremio saisis dans les réglages ;
-3. les passerelles Nuvio reconnues lors de l’import d’un dépôt CloudStream.
+1. le total annoncé par le catalogue ;
+2. le prochain épisode AniList moins un ;
+3. la dernière page réelle de l’API Jikan.
 
-Un fichier CloudStream `.cs3` est un APK destiné à un autre hôte et ne peut pas être exécuté dans Aniyomi. L’import accepte donc le `repo.json`, inventorie ses plugins puis active les équivalents disponibles. Les extensions Aniyomi françaises déjà installées restent indépendantes.
+Le chemin Jikan a été contrôlé sur **One Piece** et restitue bien plus que 24 épisodes.
 
-## APK de test
+## Catalogues et langues
 
-Le build local produit :
+Les langues proposées sont :
 
-```text
-src/fr/frunified/build/outputs/apk/debug/aniyomi-fr.frunified-v16.3-debug.apk
-```
+- français (`fr-FR`) ;
+- anglais (`en-US`) ;
+- espagnol (`es-ES`) ;
+- allemand (`de-DE`) ;
+- italien (`it-IT`) ;
+- portugais (`pt-BR`) ;
+- japonais (`ja-JP`) ;
+- hindi (`hi-IN`) ;
+- turc (`tr-TR`) ;
+- indonésien (`id-ID`) ;
+- polonais (`pl-PL`) ;
+- arabe (`ar-SA`).
 
-Il s’agit d’un APK de test signé avec la clé Android debug. Pour publier des mises à jour, utilisez une clé de signature permanente comme indiqué plus bas.
+Plusieurs langues peuvent être cochées. La langue principale pilote TMDB et les fiches ; les locales Stremio correspondantes sont ajoutées au sélecteur de catalogues.
+
+## Sources Nuvio
+
+Les dépôts proposés couvrent actuellement :
+
+- Gowaru ;
+- D3adlyRocket / Anime-Nuvio ;
+- Yoruix ;
+- Phisher ;
+- Turkish Nuvio.
+
+Sur une nouvelle installation, tous les providers compatibles avec les langues sélectionnées sont autorisés. Une source peut être décochée individuellement. **Movix est exclu par défaut** tant que ses flux de test répondent 403, mais reste visible dans le sélecteur.
+
+Les bundles internationaux utilisent parfois des fonctions Node ou des sites qui changent sans préavis. Le moteur apporte des polyfills Rhino, abaisse les boucles `for…of` et corrige plusieurs incompatibilités de portée, mais la disponibilité d’un provider tiers n’est jamais garantie.
 
 ## Installation
 
-1. Téléchargez l’APK sur l’appareil Android.
-2. Ouvrez-le et autorisez l’installation depuis cette source si Android le demande.
-3. Dans Aniyomi, ouvrez **Parcourir → Extensions Anime**.
-4. Faites confiance à l’extension si Aniyomi affiche la demande, puis ouvrez **FR Unifié**.
-5. Dans les réglages, touchez **Gérer les sources actives** pour ouvrir la fenêtre Nuvio/Stremio/CloudStream.
-6. Touchez **Ajouter Nuvio / Stremio / CloudStream** pour importer une URL `manifest.json`, un addon Stremio ou un `repo.json` CloudStream.
+### Depuis le dépôt Aniyomi
 
-Compatibilité de compilation : **API d’extension Aniyomi 16**, Android 8.0 minimum.
+Ajoutez cette URL de dépôt dans Aniyomi :
 
-## Réglages principaux
+```text
+https://raw.githubusercontent.com/j97970293-lang/aniyomi-fr-unified/repo/index.min.json
+```
 
-- **Gérer les sources actives** : charge tous les scrapeurs, y compris ceux déjà désactivés, puis permet de cocher individuellement les sources Nuvio, les passerelles CloudStream→Nuvio et les addons Stremio.
-- **Ajouter Nuvio / Stremio / CloudStream** : détecte le type de l’URL, l’enregistre et propose d’ouvrir immédiatement le sélecteur.
-- **Catalogue TMDB** / **Catalogue AniList-MAL** : active les volets de recherche.
-- **Dépôts Nuvio** : une URL `manifest.json` par ligne.
-- **Dépôts/Scrapeurs désactivés** : une URL exacte de dépôt ou un identifiant Nuvio par ligne.
-- **Priorité des flux** : motifs tels que `VF,VOSTFR,1080,HD`.
-- **Addons Stremio** : une URL de manifeste par ligne.
-- **Dépôts CloudStream suivis** : références `repo.json` ; les plugins reconnus passent par Nuvio.
-- **Sous-titres externes** : OpenSubtitles v3 et les addons configurés.
-- **Clés API avancées** : lignes `NOM=valeur`, injectées dans `process.env` des bundles Nuvio.
+Puis installez **FR Unifié** depuis **Parcourir → Extensions Anime**.
+
+### Depuis l’APK
+
+Le fichier de version est nommé :
+
+```text
+FR-Unifie-Aniyomi-v16.6.apk
+```
+
+Android peut demander l’autorisation d’installer depuis la source utilisée. Lors du premier lancement, Aniyomi peut aussi demander de faire confiance au certificat de l’extension.
+
+Compatibilité : **API d’extension Aniyomi 16**, **Android 8.0 / API 26 minimum**. La version release est destinée notamment aux appareils sous Android 8.1.
+
+## Réglages conseillés
+
+1. Dans **Catalogues**, activez les services souhaités et choisissez les langues.
+2. Si vous voulez uniquement Stremio, désactivez **Catalogues principaux**, gardez **Catalogue Stremio** actif, puis choisissez sa rangée.
+3. Choisissez la priorité **Nuvio/Stremio**.
+4. Dans **Nuvio**, choisissez les langues puis ouvrez le sélecteur des sources.
+5. Dans **Stremio**, activez les addons désirés.
+6. Utilisez les actions d’ajout propres à Nuvio ou Stremio pour coller un nouveau manifest ; il n’existe pas de champ d’import générique redondant.
+
+Le diagnostic Nuvio teste le chemin réel Kotlin → Rhino → réseau. Une réussite VOSTFR ne stoppe pas la recherche lorsqu’une VF peut encore être trouvée par l’autre moteur.
 
 ## Compilation locale
 
@@ -67,74 +103,54 @@ Prérequis : JDK 17 et Android SDK 34.
 ```bash
 export JAVA_HOME=/chemin/vers/jdk-17
 export ANDROID_HOME=/chemin/vers/android-sdk
+
 ./gradlew :src:fr:frunified:spotlessCheck
-./gradlew :src:fr:frunified:testDebugUnitTest :src:fr:frunified:lintDebug
+./gradlew :src:fr:frunified:testDebugUnitTest
+./gradlew :src:fr:frunified:lintDebug
 ./gradlew :src:fr:frunified:assembleDebug
 ```
 
+Sur une machine peu dotée en mémoire, exécutez ces commandes séquentiellement avec un seul worker.
+
 ### Tests réseau facultatifs
 
-Les tests unitaires ordinaires sont déterministes et ne dépendent pas des sites tiers. Pour lancer en plus les sondes réelles :
+Les tests ordinaires restent déterministes. Les sondes réelles sont opt-in :
 
 ```bash
 FR_UNIFIED_NETWORK_TEST=1 ./gradlew :src:fr:frunified:testDebugUnitTest \
   --tests '*NuvioNetworkSmokeTest*' \
+  --tests '*NuvioProviderHealthTest*' \
   --tests '*StremioNetworkSmokeTest*' \
-  --tests '*ExternalSourceImporterNetworkTest*'
+  --tests '*StremioCatalogNetworkTest*' \
+  --tests '*JikanCatalogNetworkTest*'
 ```
 
-Le test Stremio contrôle toujours que le manifest et la route sont conformes. Si Snixi est joignable mais renvoie temporairement une liste vide pour toutes les sondes, le contrôle de présence d’un flux est marqué ignoré plutôt que d’attribuer cette indisponibilité amont au parseur. Le parseur lui-même reste couvert par un test déterministe.
+Un provider international précis peut être essayé avec :
 
-Les révisions amont et le dernier état des sondes sont consignés dans [`UPSTREAMS.md`](UPSTREAMS.md). Le détail de cette version figure dans [`CHANGELOG.md`](CHANGELOG.md) et [`VALIDATION.md`](VALIDATION.md).
+```bash
+FR_UNIFIED_INTERNATIONAL_NUVIO_REPO='https://…/manifest.json' \
+FR_UNIFIED_INTERNATIONAL_NUVIO_IDS='provider-a,provider-b' \
+./gradlew :src:fr:frunified:testDebugUnitTest \
+  --tests '*NuvioInternationalProviderTest*'
+```
 
-## Publication d’un dépôt Aniyomi
+## Publication
 
-Le workflow `publish.yml` compile un APK release, construit `index.json`/`index.min.json`, puis publie le tout sur la branche `repo`.
+Le workflow `.github/workflows/publish.yml` construit l’APK release signé, génère `index.json`/`index.min.json`, puis publie le dépôt Aniyomi sur la branche `repo`.
 
-Configurez ces secrets GitHub :
+Secrets requis :
 
-- `SIGNING_KEY` : contenu Base64 du fichier JKS ;
+- `SIGNING_KEY` ;
 - `KEY_STORE_PASSWORD` ;
 - `ALIAS` ;
 - `KEY_PASSWORD`.
 
-Exemple pour encoder la clé :
+Ne perdez pas la clé de signature : Android refusera une mise à jour signée avec un autre certificat.
 
-```bash
-base64 -w 0 signingkey.jks
-```
+## Références et responsabilité
 
-Lancez ensuite le workflow **Publish Aniyomi repository**. L’URL à ajouter dans Aniyomi sera :
+Le comportement Stremio suit notamment l’extension de référence du dépôt [`Secozzi/aniyomi-extensions`](https://github.com/Secozzi/aniyomi-extensions). Les révisions amont et le dernier état des contrôles sont consignés dans [`UPSTREAMS.md`](UPSTREAMS.md) et [`VALIDATION.md`](VALIDATION.md).
 
-```text
-https://raw.githubusercontent.com/UTILISATEUR/DEPOT/repo/index.min.json
-```
+L’extension n’héberge aucun média. Elle interroge des catalogues et relaie les résultats des sources activées par l’utilisateur. Leur disponibilité et les règles applicables dépendent des services tiers et du pays de l’utilisateur.
 
-Ne perdez pas la clé JKS : Android refusera une mise à jour signée avec une autre clé.
-
-## Structure
-
-```text
-src/fr/frunified/
-├── build.gradle
-├── libs/rhino-nuvio-1.9.1.jar
-├── res/
-└── src/
-    ├── com/frunified/rhino/resources/RhinoMessages.kt
-    └── eu/kanade/tachiyomi/animeextension/fr/frunified/
-        ├── FrUnified.kt
-        ├── TmdbCatalog.kt
-        ├── AniListCatalog.kt
-        ├── JikanCatalog.kt
-        ├── NuvioClient.kt
-        ├── StremioClient.kt
-        └── ExternalSourceImporter.kt
-```
-
-Consultez aussi `UPSTREAMS.md` pour le suivi des versions et `src/fr/frunified/test/` pour les tests déterministes et les sondes réseau facultatives.
-
-## Remarques
-
-L’extension n’héberge aucun média. Elle interroge des catalogues publics et relaie les résultats fournis par les sources que l’utilisateur active. La disponibilité et les droits applicables dépendent de ces services et du pays de l’utilisateur.
-
-Le moteur Rhino intégré provient de Mozilla Rhino (MPL-2.0), avec les adaptations déjà utilisées par le projet CloudStream FR Unifié. Consultez `NOTICE.md` et `third_party/rhino/PATCHES.md` pour les attributions, les modifications et la reconstruction du composant.
+Mozilla Rhino est distribué sous MPL-2.0 ; consultez [`NOTICE.md`](NOTICE.md) et `third_party/rhino/PATCHES.md`.
