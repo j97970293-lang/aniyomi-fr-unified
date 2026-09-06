@@ -38,11 +38,21 @@ def find_sdk_tool(name: str) -> Path:
 
 
 def signing_fingerprint(apk: Path) -> str:
-    output = subprocess.check_output(
+    result = subprocess.run(
         [str(find_sdk_tool("apksigner")), "verify", "--print-certs", str(apk)],
         text=True,
+        capture_output=True,
+        check=True,
     )
-    return match(r"Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]+)", output, "signing fingerprint").lower()
+    # Build-tools releases have emitted the certificate report on either stream,
+    # and some versions separate fingerprint octets with colons.
+    output = result.stdout + "\n" + result.stderr
+    fingerprint = match(
+        r"certificate SHA-256 digest:\s*([0-9a-fA-F:]+)",
+        output,
+        "signing fingerprint",
+    )
+    return fingerprint.replace(":", "").lower()
 
 
 def main() -> None:
