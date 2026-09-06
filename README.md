@@ -31,7 +31,7 @@ Un fichier CloudStream `.cs3` est un APK destiné à un autre hôte et ne peut p
 Le build local produit :
 
 ```text
-src/fr/frunified/build/outputs/apk/debug/aniyomi-fr.frunified-v16.2-debug.apk
+src/fr/frunified/build/outputs/apk/debug/aniyomi-fr.frunified-v16.3-debug.apk
 ```
 
 Il s’agit d’un APK de test signé avec la clé Android debug. Pour publier des mises à jour, utilisez une clé de signature permanente comme indiqué plus bas.

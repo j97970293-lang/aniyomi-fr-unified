@@ -431,10 +431,12 @@ class FrUnified : Source() {
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) = with(screen) {
         action(
+            "action_manage_sources",
             "Gérer les sources actives",
             "Fenêtre multi-sélection Nuvio, Stremio et passerelles CloudStream.",
         ) { showSourcePicker(context) }
         action(
+            "action_add_external_source",
             "Ajouter Nuvio / Stremio / CloudStream",
             "Ajouter un manifest, un addon ou un dépôt CloudStream repo.json.",
         ) { showExternalSourceDialog(context) }
@@ -717,15 +719,17 @@ class FrUnified : Source() {
         editor.apply()
     }
 
-    private fun PreferenceScreen.action(title: String, summary: String, onClick: () -> Unit) {
+    private fun PreferenceScreen.action(
+        key: String,
+        title: String,
+        summary: String,
+        action: () -> Unit,
+    ) {
         addPreference(
-            EditTextPreference(context).apply {
+            ActionPreference(context, action).apply {
+                this.key = key
                 this.title = title
                 this.summary = summary
-                setOnPreferenceClickListener {
-                    onClick()
-                    true
-                }
             },
         )
     }

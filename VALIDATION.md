@@ -1,4 +1,4 @@
-# Rapport de validation — FR Unifié 16.2
+# Rapport de validation — FR Unifié 16.3
 
 Date : **6 septembre 2026**
 
@@ -14,6 +14,7 @@ Date : **6 septembre 2026**
 | APK release | Construit et signé |
 | Vérification `apksigner` | Réussie, signature APK v2 |
 | Génération du dépôt Aniyomi | Réussie (`index.json`, `index.min.json`, `repo.json`, APK et icône) |
+| Régression du dialogue AndroidX | `ActionPreference.onClick()` présent dans le DEX en méthode virtuelle protégée ; événement marqué traité avant le dialogue standard |
 
 ## Résultats réseau réels
 
@@ -31,12 +32,12 @@ Les réponses de services tiers restent susceptibles de varier. Snixi avait nota
 
 ## APK validé
 
-- Fichier : `FR-Unifie-Aniyomi-v16.2.apk`
+- Fichier : `FR-Unifie-Aniyomi-v16.3.apk`
 - Package : `eu.kanade.tachiyomi.animeextension.fr.frunified`
-- Version : `16.2` (`versionCode` 2)
+- Version : `16.3` (`versionCode` 3)
 - Android : minSdk 26, targetSdk 34
 - Source Aniyomi : `6917344484142790022`
-- SHA-256 APK : `39892369fbf96fb50a44d31b367a6db5eb40651004da2332c6d9ddc94124782d`
+- SHA-256 APK : `e6e24a2db38017d51c858c6c1351ea2099ff1473d36742ed82c572f4b50e6d09`
 - Empreinte SHA-256 du certificat : `e2f3ec03556cebbf3d062687eb00282926c0f61d9b4eb8126d788cccf1b1da9e`
 
 ## Limite documentée

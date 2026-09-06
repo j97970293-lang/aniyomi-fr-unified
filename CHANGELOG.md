@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 16.3 — 6 septembre 2026
+
+- correction du crash AndroidX `Key cannot be null` à l’ouverture des deux nouvelles actions de réglages ;
+- les actions possèdent désormais une clé stable et interceptent `onClick()` avant le dialogue standard d’`EditTextPreference` ;
+- le dialogue standard est explicitement bloqué afin que seule la fenêtre Nuvio/Stremio/CloudStream soit affichée.
+
 ## 16.2 — 6 septembre 2026
 
 - ajout d’une fenêtre multi-sélection Nuvio, Stremio et passerelles CloudStream ;
