@@ -1218,9 +1218,15 @@ object NuvioClient {
         if (!FrSettings.verifyStreamContent) return false
         val ct = contentType.orEmpty().lowercase()
         if (ct.contains("text/html")) return true
-        val mediaLike = ct.contains("json") || ct.contains("octet") || ct.contains("mpegurl") ||
-            ct.contains("video") || ct.contains("audio") || ct.contains("mp4") ||
-            ct.contains("mp2t") || ct.contains("quicktime") || ct.contains("matroska")
+        val mediaLike = ct.contains("json") ||
+            ct.contains("octet") ||
+            ct.contains("mpegurl") ||
+            ct.contains("video") ||
+            ct.contains("audio") ||
+            ct.contains("mp4") ||
+            ct.contains("mp2t") ||
+            ct.contains("quicktime") ||
+            ct.contains("matroska")
         if (ct.isNotEmpty() && mediaLike) return false
         if (body.isNullOrBlank()) return false
         val sample = body.take(12_000).lowercase()
