@@ -14,6 +14,9 @@ import java.net.URLEncoder
 import java.util.Base64
 
 object StremioClient {
+    /** Durée maximale d'une requête de flux : un addon lent ne doit jamais bloquer la liste. */
+    private const val STREAM_TIMEOUT_MS = 15_000L
+
     private val trackers = listOf(
         "udp://tracker.opentrackr.org:1337/announce",
         "udp://open.tracker.cl:1337/announce",
@@ -101,7 +104,9 @@ object StremioClient {
         val videos = data.targets.map { target ->
             async {
                 runCatching {
-                    streamsFrom(data.addon, target.type, target.id, data.payload, data.addonName)
+                    withTimeoutOrNull(STREAM_TIMEOUT_MS) {
+                        streamsFrom(data.addon, target.type, target.id, data.payload, data.addonName)
+                    }.orEmpty()
                 }.getOrDefault(emptyList())
             }
         }.awaitAll().flatten().limitedDistinct()
@@ -123,7 +128,9 @@ object StremioClient {
             addon.targets.map { target ->
                 async {
                     runCatching {
-                        streamsFrom(addon.base, target.type, target.id, payload, addon.name)
+                        withTimeoutOrNull(STREAM_TIMEOUT_MS) {
+                            streamsFrom(addon.base, target.type, target.id, payload, addon.name)
+                        }.orEmpty()
                     }.getOrDefault(emptyList())
                 }
             }
@@ -134,7 +141,9 @@ object StremioClient {
                     target?.let {
                         async {
                             runCatching {
-                                inlineMetaStreams(addon, it.type, payload.stremioMetaId ?: it.id, payload)
+                                withTimeoutOrNull(STREAM_TIMEOUT_MS) {
+                                    inlineMetaStreams(addon, it.type, payload.stremioMetaId ?: it.id, payload)
+                                }.orEmpty()
                             }.getOrDefault(emptyList())
                         }
                     }
