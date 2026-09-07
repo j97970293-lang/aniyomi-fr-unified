@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.animeextension.fr.frunified
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
@@ -68,6 +69,14 @@ object StremioCatalog {
             resourceRules.any { it.name == resource && it.supports(type, id) }
     }
 
+    data class StreamTarget(val type: String, val id: String)
+
+    data class StreamAddon(
+        val base: String,
+        val name: String,
+        val targets: List<StreamTarget>,
+    )
+
     data class Ref(val addonBase: String, val type: String, val id: String) {
         fun serialize(): String {
             val value = JSONObject().apply {
@@ -92,6 +101,106 @@ object StremioCatalog {
 
     private val manifestCache = ConcurrentHashMap<String, Pair<Long, Addon?>>()
     private val metaCache = ConcurrentHashMap<String, Pair<Long, JSONObject?>>()
+
+    @Volatile
+    private var catalogSnapshot: List<Catalog> = emptyList()
+
+    /**
+     * Tous les éléments `catalogs[]` restent disponibles séparément dans les
+     * filtres Aniyomi, y compris avant le prochain rafraîchissement réseau.
+     */
+    fun cachedCatalogs(): List<Catalog> {
+        if (catalogSnapshot.isEmpty()) {
+            catalogSnapshot = decodeCatalogCache(FrSettings.stremioCatalogCache)
+        }
+        val active = FrSettings.stremioUrls
+            .map(StremioClient::base)
+            .filter(FrSettings::isStremioEnabled)
+            .toSet()
+        return catalogSnapshot.filter { it.addonBase in active }.distinctBy(Catalog::key)
+    }
+
+    @Synchronized
+    internal fun rememberCatalogs(addonBase: String, catalogs: List<Catalog>) {
+        val base = StremioClient.base(addonBase)
+        val addonOrder = FrSettings.stremioUrls.map(StremioClient::base)
+        catalogSnapshot = (cachedCatalogsRaw().filterNot { it.addonBase == base } + catalogs)
+            .distinctBy(Catalog::key)
+            .sortedBy { catalog ->
+                addonOrder.indexOf(catalog.addonBase).let { if (it < 0) Int.MAX_VALUE else it }
+            }
+        val encoded = encodeCatalogCache(catalogSnapshot)
+        if (FrSettings.stremioCatalogCache != encoded) {
+            FrSettings.saveStremioCatalogCache(encoded)
+        }
+    }
+
+    private fun cachedCatalogsRaw(): List<Catalog> {
+        if (catalogSnapshot.isEmpty()) {
+            catalogSnapshot = decodeCatalogCache(FrSettings.stremioCatalogCache)
+        }
+        return catalogSnapshot
+    }
+
+    private fun encodeCatalogCache(catalogs: List<Catalog>): String = JSONArray().apply {
+        catalogs.forEach { catalog ->
+            put(
+                JSONObject().apply {
+                    put("base", catalog.addonBase)
+                    put("addon", catalog.addonName)
+                    put("type", catalog.type)
+                    put("id", catalog.id)
+                    put("name", catalog.name)
+                    put("pageSize", catalog.pageSize)
+                    put(
+                        "extras",
+                        JSONArray().apply {
+                            catalog.extras.forEach { extra ->
+                                put(
+                                    JSONObject().apply {
+                                        put("name", extra.name)
+                                        put("required", extra.required)
+                                        put("options", JSONArray(extra.options))
+                                    },
+                                )
+                            }
+                        },
+                    )
+                },
+            )
+        }
+    }.toString()
+
+    private fun decodeCatalogCache(value: String): List<Catalog> = runCatching {
+        val array = JSONArray(value)
+        (0 until array.length()).mapNotNull { index ->
+            val item = array.optJSONObject(index) ?: return@mapNotNull null
+            val base = item.optString("base").takeIf(String::isNotBlank) ?: return@mapNotNull null
+            val type = item.optString("type").takeIf(String::isNotBlank) ?: return@mapNotNull null
+            val id = item.optString("id").takeIf(String::isNotBlank) ?: return@mapNotNull null
+            val extras = item.optJSONArray("extras")?.let { entries ->
+                (0 until entries.length()).mapNotNull { extraIndex ->
+                    val extra = entries.optJSONObject(extraIndex) ?: return@mapNotNull null
+                    extra.optString("name").takeIf(String::isNotBlank)?.let { name ->
+                        Extra(
+                            name = name,
+                            required = extra.optBoolean("required", false),
+                            options = stringArray(extra.optJSONArray("options")),
+                        )
+                    }
+                }
+            }.orEmpty()
+            Catalog(
+                addonBase = StremioClient.base(base),
+                addonName = item.optString("addon").ifBlank { base.substringAfter("://").substringBefore('/') },
+                type = type,
+                id = id,
+                name = item.optString("name").ifBlank { id },
+                pageSize = item.optInt("pageSize", 20).coerceIn(1, 200),
+                extras = extras,
+            )
+        }
+    }.getOrDefault(emptyList())
 
     private fun stringArray(array: JSONArray?): List<String> =
         if (array == null) {
@@ -171,6 +280,7 @@ object StremioCatalog {
         }
         val addon = parseManifest(root, base)
         manifestCache[base] = (now + MANIFEST_CACHE_MS) to addon
+        rememberCatalogs(base, addon.catalogs)
         return addon
     }
 
@@ -178,29 +288,50 @@ object StremioCatalog {
         FrSettings.stremioUrls
             .filter(FrSettings::isStremioEnabled)
             .distinct()
-            .map { base -> async { loadAddon(base) } }
+            .map { base -> async { withTimeoutOrNull(10_000L) { loadAddon(base) } } }
             .awaitAll()
             .filterNotNull()
     }
 
-    suspend fun catalogs(): List<Catalog> = addons()
-        .filter { "catalog" in it.resources }
-        .flatMap(Addon::catalogs)
-
-    suspend fun streamAddonBases(type: String, id: String): List<String> {
+    suspend fun catalogs(): List<Catalog> {
         val loaded = addons()
-        val matched = loaded.filter { it.supports("stream", type, id) }.map(Addon::base)
-        // Un manifest temporairement indisponible ne doit pas neutraliser cet addon de lecture.
-        val unavailable = FrSettings.stremioUrls.filter(FrSettings::isStremioEnabled)
-            .filterNot { candidate -> loaded.any { it.base == StremioClient.base(candidate) } }
-            .filterNot { it.contains("tmdb.elfhosted.com", true) || it.contains("cinemeta", true) }
-        return (matched + unavailable).distinct()
+            .filter { "catalog" in it.resources }
+            .flatMap(Addon::catalogs)
+        return (loaded + cachedCatalogs()).distinctBy(Catalog::key)
     }
 
-    suspend fun selectedCatalog(): Catalog? {
+    suspend fun streamAddons(targets: List<StreamTarget>): List<StreamAddon> {
+        val candidates = targets.distinctBy { "${it.type.lowercase()}|${it.id}" }
+        if (candidates.isEmpty()) return emptyList()
+        val loaded = addons()
+        val matched = loaded.mapNotNull { addon ->
+            val supported = candidates.filter { addon.supports("stream", it.type, it.id) }
+            supported.takeIf { it.isNotEmpty() }?.let {
+                StreamAddon(addon.base, addon.name, supported)
+            }
+        }
+        // Un manifest temporairement indisponible ne doit pas neutraliser un addon de lecture.
+        val unavailable = FrSettings.stremioUrls.filter(FrSettings::isStremioEnabled)
+            .map(StremioClient::base)
+            .filterNot { candidate -> loaded.any { it.base == candidate } }
+            .filterNot { it.contains("tmdb.elfhosted.com", true) || it.contains("cinemeta", true) }
+            .map { base ->
+                StreamAddon(
+                    base = base,
+                    name = base.substringAfter("://").substringBefore('/'),
+                    targets = candidates,
+                )
+            }
+        return (matched + unavailable).distinctBy(StreamAddon::base)
+    }
+
+    suspend fun streamAddonBases(type: String, id: String): List<String> =
+        streamAddons(listOf(StreamTarget(type, id))).map(StreamAddon::base)
+
+    suspend fun selectedCatalog(catalogKey: String = FrSettings.stremioCatalogKey): Catalog? {
         val values = catalogs()
         if (values.isEmpty()) return null
-        val selectedRef = Ref.parse(FrSettings.stremioCatalogKey)
+        val selectedRef = Ref.parse(catalogKey)
         if (selectedRef != null) {
             values.firstOrNull {
                 it.addonBase == selectedRef.addonBase && it.type == selectedRef.type && it.id == selectedRef.id
@@ -219,8 +350,13 @@ object StremioCatalog {
             ?: values.first()
     }
 
-    suspend fun browse(page: Int, query: String = ""): List<CatalogItem> = coroutineScope {
-        val selected = selectedCatalog() ?: return@coroutineScope emptyList()
+    suspend fun browse(
+        page: Int,
+        query: String = "",
+        catalogKey: String = FrSettings.stremioCatalogKey,
+        selectedExtras: Map<String, String> = emptyMap(),
+    ): List<CatalogItem> = coroutineScope {
+        val selected = selectedCatalog(catalogKey) ?: return@coroutineScope emptyList()
         val all = catalogs()
         val targets = if (query.isBlank()) {
             listOf(selected)
@@ -238,13 +374,25 @@ object StremioCatalog {
             }
         }
         targets.map { catalog ->
-            async { runCatching { requestCatalog(catalog, page, query) }.getOrDefault(emptyList()) }
+            async {
+                runCatching { requestCatalog(catalog, page, query, selectedExtras) }.getOrDefault(emptyList())
+            }
         }.awaitAll().flatten().distinctBy { it.id.serialize() }
     }
 
-    private suspend fun requestCatalog(catalog: Catalog, page: Int, query: String): List<CatalogItem> {
+    private suspend fun requestCatalog(
+        catalog: Catalog,
+        page: Int,
+        query: String,
+        selectedExtras: Map<String, String>,
+    ): List<CatalogItem> {
         val extras = linkedMapOf<String, String>()
         extras.putAll(catalog.requiredDefaults())
+        selectedExtras.forEach { (name, value) ->
+            val manifestName = catalog.extras.firstOrNull { it.name.equals(name, true) }?.name
+                ?: return@forEach
+            if (value.isBlank()) extras.remove(manifestName) else extras[manifestName] = value
+        }
         if (query.isNotBlank() && catalog.supportsSearch) extras["search"] = query
         if (page > 1 && catalog.supportsSkip) extras["skip"] = ((page - 1) * catalog.pageSize).toString()
 

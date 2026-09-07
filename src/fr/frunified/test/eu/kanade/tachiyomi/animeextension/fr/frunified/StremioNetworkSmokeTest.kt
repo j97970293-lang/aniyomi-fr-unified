@@ -1,10 +1,12 @@
 package eu.kanade.tachiyomi.animeextension.fr.frunified
 
+import android.content.SharedPreferences
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
+import java.lang.reflect.Proxy
 import java.net.URI
 
 class StremioNetworkSmokeTest {
@@ -69,5 +71,55 @@ class StremioNetworkSmokeTest {
         assertTrue("Placeholder stream was not filtered", videos.none { "/troll/master.m3u8" in it.videoUrl })
     }
 
+    @Test
+    fun streamHosterIsExposedWhenNuvioIsDisabled() = runBlocking {
+        assumeTrue("Set FR_UNIFIED_NETWORK_TEST=1 to run", System.getenv("FR_UNIFIED_NETWORK_TEST") == "1")
+        FrSettings.init(
+            preferences(
+                mapOf(
+                    FrSettings.KEY_STREMIO to addon,
+                    FrSettings.KEY_USE_STREMIO to true,
+                    FrSettings.KEY_USE_NUVIO to false,
+                ),
+            ),
+        )
+        FrRuntime.initForTests { url -> URI(url).toURL().readText() }
+        val payload = PlayPayload(
+            kind = "tv",
+            titles = listOf("One Piece"),
+            year = 1999,
+            season = 1,
+            episode = 1,
+            imdbId = "tt0388629",
+        )
+
+        val hosters = StremioClient.hosters(payload)
+        assertTrue(
+            "Snixi stream hoster disappeared with Nuvio disabled",
+            hosters.any { "French Streaming Providers" in it.hosterName },
+        )
+    }
+
     private fun readJson(url: String): JSONObject = JSONObject(URI(url).toURL().readText())
+
+    private fun preferences(values: Map<String, Any?>): SharedPreferences = Proxy.newProxyInstance(
+        SharedPreferences::class.java.classLoader,
+        arrayOf(SharedPreferences::class.java),
+    ) { _, method, args ->
+        when (method.name) {
+            "getAll" -> values
+            "contains" -> values.containsKey(args?.get(0) as String)
+            "getString" -> values[args?.get(0) as String] as? String ?: args[1] as? String
+            "getBoolean" -> values[args?.get(0) as String] as? Boolean ?: args[1] as Boolean
+            else -> defaultValue(method.returnType)
+        }
+    } as SharedPreferences
+
+    private fun defaultValue(type: Class<*>): Any? = when (type) {
+        java.lang.Boolean.TYPE -> false
+        java.lang.Integer.TYPE -> 0
+        java.lang.Long.TYPE -> 0L
+        java.lang.Float.TYPE -> 0F
+        else -> null
+    }
 }

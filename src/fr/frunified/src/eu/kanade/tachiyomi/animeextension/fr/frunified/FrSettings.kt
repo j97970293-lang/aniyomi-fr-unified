@@ -5,13 +5,14 @@ import android.content.SharedPreferences
 /** Préférences partagées par les catalogues, Stremio et le moteur Nuvio. */
 object FrSettings {
     const val KEY_SETTINGS_VERSION = "fr_unified_settings_version"
-    const val SETTINGS_VERSION = 4
+    const val SETTINGS_VERSION = 5
 
     const val KEY_STREMIO = "stremio_urls"
     const val KEY_STREMIO_DISABLED = "stremio_disabled"
     const val KEY_USE_STREMIO = "use_stremio"
     const val KEY_USE_STREMIO_CATALOG = "use_stremio_catalog"
     const val KEY_STREMIO_CATALOG = "stremio_catalog"
+    const val KEY_STREMIO_CATALOG_CACHE = "stremio_catalog_cache_v5"
     const val KEY_ENGINE_ORDER = "resolver_engine_order"
     const val KEY_STREMIO_MAX = "stremio_max_streams"
 
@@ -194,6 +195,12 @@ object FrSettings {
     val useStremio: Boolean get() = bool(KEY_USE_STREMIO, true)
     val useStremioCatalog: Boolean get() = bool(KEY_USE_STREMIO_CATALOG, true)
     val stremioCatalogKey: String get() = string(KEY_STREMIO_CATALOG, "")
+    val stremioCatalogCache: String get() = string(KEY_STREMIO_CATALOG_CACHE, "")
+
+    internal fun saveStremioCatalogCache(value: String) {
+        runCatching { prefs?.edit()?.putString(KEY_STREMIO_CATALOG_CACHE, value)?.apply() }
+    }
+
     val engineOrder: String
         get() = string(KEY_ENGINE_ORDER, "nuvio_first")
             .takeIf { it == "nuvio_first" || it == "stremio_first" } ?: "nuvio_first"
@@ -237,7 +244,7 @@ object FrSettings {
         get() = string(KEY_NUVIO_ORDER, RECOMMENDED_NUVIO_IDS.joinToString("\n"))
             .lineSequence().map(String::trim).filter(String::isNotBlank).toList()
     val nuvioConcurrency: Int
-        get() = string(KEY_NUVIO_CONCURRENCY, "2").toIntOrNull()?.coerceIn(1, 4) ?: 2
+        get() = string(KEY_NUVIO_CONCURRENCY, "3").toIntOrNull()?.coerceIn(2, 4) ?: 3
     val nuvioSearchMode: String
         get() = string(KEY_NUVIO_SEARCH_MODE, "fast").takeIf { it in setOf("fast", "balanced", "complete") }
             ?: "fast"

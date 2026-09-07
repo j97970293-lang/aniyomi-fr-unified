@@ -51,10 +51,13 @@ object ExternalSourceImporter {
                     name in setOf("stream", "catalog", "meta", "subtitles")
                 }
             if (hasStremioResource || json.optJSONArray("catalogs") != null) {
+                val base = StremioClient.base(candidate)
+                val addon = StremioCatalog.parseManifest(json, base)
+                StremioCatalog.rememberCatalogs(base, addon.catalogs)
                 return ImportResult(
                     Kind.STREMIO,
-                    StremioClient.base(candidate),
-                    json.optString("name").ifBlank { candidate.substringAfter("://").substringBefore('/') },
+                    base,
+                    addon.name,
                 )
             }
         }

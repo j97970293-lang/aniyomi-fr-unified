@@ -71,15 +71,22 @@ object NuvioClient {
     private val manifestCache = ConcurrentHashMap<String, Pair<Long, List<NuvioScraper>>>()
     private val tmdbCache = ConcurrentHashMap<String, Pair<Long, Int?>>()
 
-    @Volatile private var semaphore = Semaphore(NUVIO_CONCURRENCY)
+    @Volatile private var semaphoreCapacity = NUVIO_CONCURRENCY
+
+    @Volatile private var semaphore = Semaphore(semaphoreCapacity)
 
     /** Sémaphore des seuls TESTS (2 max) : ne bloque jamais la lecture réelle. */
     private val testSemaphore = Semaphore(2)
 
-    /** Re-crée le sémaphore si l'utilisateur a changé la concurrence. */
-    private fun syncSemaphore() {
+    /** Re-crée le sémaphore uniquement si le réglage a changé, pas lorsqu'un permit est occupé. */
+    @Synchronized
+    private fun syncSemaphore(): Semaphore {
         val wanted = FrSettings.nuvioConcurrency
-        if (semaphore.availablePermits != wanted) semaphore = Semaphore(wanted)
+        if (semaphoreCapacity != wanted) {
+            semaphore = Semaphore(wanted)
+            semaphoreCapacity = wanted
+        }
+        return semaphore
     }
 
     /** Résultats du dernier passage (id scrapeur -> « ✓ 12 liens » ou « ✗ raison »). */
@@ -100,43 +107,62 @@ object NuvioClient {
         }
     }
 
+    fun invalidateRepository(repo: String) {
+        manifestCache.remove(repo.trim())
+    }
+
     // ------------------------------------------------------------ dépôts
 
     /** Tous les scrapeurs des dépôts configurés, avec inclusion facultative des désactivés pour l'interface. */
     suspend fun scrapers(includeDisabled: Boolean = false): List<NuvioScraper> = coroutineScope {
         val repos = FrSettings.nuvioRepos.ifEmpty { FrSettings.DEFAULT_NUVIO_REPOS }
             .filter { FrSettings.isNuvioRepoEnabled(it) }
-        repos.map { repo ->
+        val loaded = repos.map { repo ->
             async { withTimeoutOrNull(20_000L) { manifest(repo) }.orEmpty() }
         }.awaitAll().flatten()
-            .filter { includeDisabled || FrSettings.isNuvioEnabled(it.id) }
-            .filter { it.manifestEnabled }
-            .filter {
-                it.supportedTypes.any { t ->
-                    val tt = t.lowercase()
-                    tt == "movie" ||
-                        tt == "tv" ||
-                        tt == "series" ||
-                        tt == "anime" ||
-                        tt == "cartoon" ||
-                        tt == "animation" ||
-                        tt == "anime_movie"
-                }
-            }
-            .filter { FrSettings.isNuvioLanguageEnabled(it.contentLanguage) }
-            .distinctBy { it.id.lowercase() }
-            .sortedWith { a, b ->
-                val oa = FrSettings.nuvioOrder.indexOf(a.id).let { if (it < 0) Int.MAX_VALUE else it }
-                val ob = FrSettings.nuvioOrder.indexOf(b.id).let { if (it < 0) Int.MAX_VALUE else it }
-                if (oa != ob) {
-                    oa.compareTo(ob)
-                } else {
-                    val fa = if (a.isFrench) 0 else 1
-                    val fb = if (b.isFrench) 0 else 1
-                    if (fa != fb) fa.compareTo(fb) else a.name.lowercase().compareTo(b.name.lowercase())
-                }
-            }
+        selectableScrapers(loaded, includeDisabled)
     }
+
+    internal fun selectableScrapers(
+        values: List<NuvioScraper>,
+        includeDisabled: Boolean,
+    ): List<NuvioScraper> = values
+        .filter { includeDisabled || FrSettings.isNuvioEnabled(it.id) }
+        .filter { includeDisabled || it.manifestEnabled }
+        .filter {
+            includeDisabled ||
+                it.supportedTypes.isEmpty() ||
+                it.supportedTypes.any { type ->
+                    type.lowercase() in setOf(
+                        "movie",
+                        "tv",
+                        "series",
+                        "anime",
+                        "cartoon",
+                        "animation",
+                        "anime_movie",
+                    )
+                }
+        }
+        // Le sélecteur doit montrer le contenu de tous les dépôts ajoutés.
+        // Le filtre de langues ne s'applique qu'à l'exécution des providers.
+        .filter { includeDisabled || FrSettings.isNuvioLanguageEnabled(it.contentLanguage) }
+        // Un dépôt ajouté plus tard remplace la variante par défaut portant le même id.
+        .associateBy { it.id.lowercase() }
+        .values
+        .sortedWith { a, b ->
+            val oa = FrSettings.nuvioOrder.indexOfFirst { it.equals(a.id, true) }
+                .let { if (it < 0) Int.MAX_VALUE else it }
+            val ob = FrSettings.nuvioOrder.indexOfFirst { it.equals(b.id, true) }
+                .let { if (it < 0) Int.MAX_VALUE else it }
+            if (oa != ob) {
+                oa.compareTo(ob)
+            } else {
+                val fa = if (a.isFrench) 0 else 1
+                val fb = if (b.isFrench) 0 else 1
+                if (fa != fb) fa.compareTo(fb) else a.name.lowercase().compareTo(b.name.lowercase())
+            }
+        }
 
     private suspend fun manifest(repo: String): List<NuvioScraper> {
         manifestCache[repo]?.let { (expiry, list) -> if (expiry > System.currentTimeMillis()) return list }
@@ -145,13 +171,19 @@ object NuvioClient {
         val json = runCatching {
             withContext(Dispatchers.IO) { JSONObject(httpGet(repo.trim(), emptyMap())) }
         }.getOrNull() ?: return cached
-        val array = json.optJSONArray("scrapers") ?: return cached
+        val list = parseManifest(repo, json)
+        if (list.isEmpty() && json.optJSONArray("scrapers") == null) return cached
 
+        manifestCache[repo] = (System.currentTimeMillis() + MANIFEST_TTL_MS) to list
+        return list
+    }
+
+    internal fun parseManifest(repo: String, json: JSONObject): List<NuvioScraper> {
+        val array = json.optJSONArray("scrapers") ?: return emptyList()
         val base = repo.trim().removeSuffix("/").removeSuffix("manifest.json").removeSuffix("/")
-
-        val list = (0 until array.length()).mapNotNull { i ->
-            val entry = array.optJSONObject(i) ?: return@mapNotNull null
-            val filename = entry.optString("filename").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        return (0 until array.length()).mapNotNull { index ->
+            val entry = array.optJSONObject(index) ?: return@mapNotNull null
+            val filename = entry.optString("filename").takeIf(String::isNotBlank) ?: return@mapNotNull null
             NuvioScraper(
                 id = entry.optString("id").ifBlank { filename },
                 name = entry.optString("name").ifBlank { filename },
@@ -163,9 +195,6 @@ object NuvioClient {
                 manifestEnabled = entry.optBoolean("enabled", true),
             )
         }
-
-        manifestCache[repo] = (System.currentTimeMillis() + MANIFEST_TTL_MS) to list
-        return list
     }
 
     private fun stringArray(array: JSONArray?): List<String> {
@@ -434,7 +463,7 @@ object NuvioClient {
     suspend fun streams(payload: PlayPayload, callback: (Video) -> Unit): Boolean {
         if (!FrSettings.useNuvio) return false
         lastResults.clear()
-        syncSemaphore()
+        val limiter = syncSemaphore()
 
         val tmdbId = tmdbId(payload) ?: return false
         val all = orderForPayload(scrapers(), payload)
@@ -449,7 +478,7 @@ object NuvioClient {
                 all.map { scraper ->
                     async {
                         runCatching {
-                            semaphore.withPermit {
+                            limiter.withPermit {
                                 runScraper(scraper, tmdbId, mediaType, season, episode, payload, callback)
                             }
                         }.getOrDefault(false)
@@ -457,9 +486,10 @@ object NuvioClient {
                 }.awaitAll().any { it }
             }
 
-            "balanced" -> runSequential(
+            "balanced" -> runConcurrentBatches(
                 all,
                 2,
+                limiter,
                 tmdbId,
                 mediaType,
                 season,
@@ -468,9 +498,10 @@ object NuvioClient {
                 callback,
             )
 
-            else -> runSequential(
+            else -> runConcurrentBatches(
                 all,
                 1,
+                limiter,
                 tmdbId,
                 mediaType,
                 season,
@@ -481,35 +512,51 @@ object NuvioClient {
         }
     }
 
-    private suspend fun runSequential(
+    private suspend fun runConcurrentBatches(
         scrapers: List<NuvioScraper>,
         successesWanted: Int,
+        limiter: Semaphore,
         tmdbId: Int,
         mediaType: String,
         season: Int,
         episode: Int,
         payload: PlayPayload,
         callback: (Video) -> Unit,
-    ): Boolean {
+    ): Boolean = coroutineScope {
         var successes = 0
-        var sawExplicitAudio = false
-        var foundFrenchAudio = false
-        for (scraper in scrapers) {
-            val ok = runCatching {
-                runScraper(scraper, tmdbId, mediaType, season, episode, payload) { video ->
-                    audioTag(video.videoTitle)?.let { tag ->
-                        sawExplicitAudio = true
-                        if (tag in setOf("VF", "VFF", "VFQ", "MULTI")) foundFrenchAudio = true
-                    }
-                    callback(video)
+        val sawExplicitAudio = java.util.concurrent.atomic.AtomicBoolean(false)
+        val foundFrenchAudio = java.util.concurrent.atomic.AtomicBoolean(false)
+        val batchSize = FrSettings.nuvioConcurrency.coerceIn(2, 4)
+
+        // Rapide et équilibré sont eux aussi simultanés. L'arrêt anticipé se fait
+        // entre deux lots bornés afin de ne jamais annuler une VF encore en vol.
+        for (batch in scrapers.chunked(batchSize)) {
+            val results = batch.map { scraper ->
+                async {
+                    runCatching {
+                        limiter.withPermit {
+                            runScraper(scraper, tmdbId, mediaType, season, episode, payload) { video ->
+                                audioTag(video.videoTitle)?.let { tag ->
+                                    sawExplicitAudio.set(true)
+                                    if (tag in setOf("VF", "VFF", "VFQ", "MULTI")) {
+                                        foundFrenchAudio.set(true)
+                                    }
+                                }
+                                callback(video)
+                            }
+                        }
+                    }.getOrDefault(false)
                 }
-            }.getOrDefault(false)
-            if (ok) {
-                successes++
-                if (successes >= successesWanted && (!sawExplicitAudio || foundFrenchAudio)) return true
+            }.awaitAll()
+            successes += results.count { it }
+            if (
+                successes >= successesWanted &&
+                (!sawExplicitAudio.get() || foundFrenchAudio.get())
+            ) {
+                return@coroutineScope true
             }
         }
-        return successes > 0
+        successes > 0
     }
 
     private fun orderForPayload(scrapers: List<NuvioScraper>, payload: PlayPayload): List<NuvioScraper> {
@@ -532,7 +579,8 @@ object NuvioClient {
         return compatible.sortedWith(
             compareBy<NuvioScraper> {
                 // L'ordre enregistré par le sélecteur utilisateur prime toujours.
-                FrSettings.nuvioOrder.indexOf(it.id).let { index -> if (index < 0) Int.MAX_VALUE else index }
+                FrSettings.nuvioOrder.indexOfFirst { id -> id.equals(it.id, true) }
+                    .let { index -> if (index < 0) Int.MAX_VALUE else index }
             }.thenBy {
                 priority.indexOf(it.id).let { index -> if (index < 0) Int.MAX_VALUE else index }
             }.thenBy { it.name.lowercase() },

@@ -1,13 +1,17 @@
 package eu.kanade.tachiyomi.animeextension.fr.frunified
 
+import eu.kanade.tachiyomi.animesource.model.Hoster
 import eu.kanade.tachiyomi.animesource.model.Track
 import eu.kanade.tachiyomi.animesource.model.Video
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Headers
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.util.Base64
 
 object StremioClient {
     private val trackers = listOf(
@@ -24,40 +28,170 @@ object StremioClient {
         .removeSuffix("/manifest.json")
         .removeSuffix("/")
 
-    private suspend fun stremioId(payload: PlayPayload): Pair<String, String>? {
-        if (!payload.stremioType.isNullOrBlank() && !payload.stremioId.isNullOrBlank()) {
-            return payload.stremioType to payload.stremioId
+    private data class HosterPayload(
+        val addon: String,
+        val addonName: String,
+        val payload: PlayPayload,
+        val targets: List<StremioCatalog.StreamTarget>,
+    )
+
+    private suspend fun streamTargets(payload: PlayPayload): List<StremioCatalog.StreamTarget> {
+        val directType = payload.stremioType?.takeIf(String::isNotBlank)
+        val directId = payload.stremioId?.takeIf(String::isNotBlank)
+        val season = payload.season ?: 1
+        val episode = payload.episode ?: 1
+        val directImdb = directId?.let { Regex("^(tt[0-9]+)").find(it)?.groupValues?.get(1) }
+        val imdb = payload.imdbId ?: directImdb ?: runCatching { TmdbCatalog.imdbId(payload) }.getOrNull()
+        val directTmdb = directId?.let {
+            Regex("^tmdb:([0-9]+)", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1)?.toIntOrNull()
         }
-        val imdb = TmdbCatalog.imdbId(payload) ?: return null
-        return if (payload.isSeries) {
-            "series" to "$imdb:${payload.season ?: 1}:${payload.episode ?: 1}"
+        val tmdb = payload.tmdbId ?: directTmdb
+
+        val ids = linkedSetOf<String>()
+        directId?.let(ids::add)
+        if (payload.isSeries) {
+            imdb?.let { ids += "$it:$season:$episode" }
+            tmdb?.let { ids += "tmdb:$it:$season:$episode" }
         } else {
-            "movie" to imdb
+            imdb?.let(ids::add)
+            tmdb?.let { ids += "tmdb:$it" }
+        }
+        if (ids.isEmpty()) return emptyList()
+
+        val types = linkedSetOf<String>()
+        directType?.let(types::add)
+        if (payload.isSeries) {
+            types += "series"
+            types += "tv"
+        } else {
+            types += "movie"
+        }
+
+        return buildList {
+            if (directType != null && directId != null) {
+                add(StremioCatalog.StreamTarget(directType, directId))
+            }
+            types.forEach { type ->
+                ids.forEach { id -> add(StremioCatalog.StreamTarget(type, id)) }
+            }
+        }.distinctBy { "${it.type.lowercase()}|${it.id}" }
+    }
+
+    /** Les serveurs sont exposés dès le manifest, puis leurs flux sont chargés au clic comme dans Stremio. */
+    suspend fun hosters(payload: PlayPayload): List<Hoster> {
+        if (!FrSettings.useStremio || FrSettings.stremioUrls.isEmpty()) return emptyList()
+        val addons = StremioCatalog.streamAddons(streamTargets(payload))
+        return addons.mapNotNull { addon ->
+            val first = addon.targets.firstOrNull() ?: return@mapNotNull null
+            Hoster(
+                hosterUrl = "${base(addon.base)}/stream/${first.type}/${first.id}.json",
+                hosterName = "Stremio · ${addon.name}",
+                internalData = encodeHosterPayload(addon, payload),
+            )
+        }
+    }
+
+    suspend fun streams(hoster: Hoster): List<Video> = coroutineScope {
+        val data = decodeHosterPayload(hoster.internalData) ?: return@coroutineScope emptyList()
+        val subtitles = async {
+            withTimeoutOrNull(3_000L) {
+                runCatching { subtitles(data.payload) }.getOrDefault(emptyList())
+            }.orEmpty()
+        }
+        val videos = data.targets.map { target ->
+            async {
+                runCatching {
+                    streamsFrom(data.addon, target.type, target.id, data.payload, data.addonName)
+                }.getOrDefault(emptyList())
+            }
+        }.awaitAll().flatten().limitedDistinct()
+        val tracks = subtitles.await()
+        if (tracks.isEmpty()) {
+            videos
+        } else {
+            videos.map { video ->
+                video.copy(subtitleTracks = (video.subtitleTracks + tracks).distinctBy { "${it.lang}|${it.url}" })
+            }
         }
     }
 
     suspend fun streams(payload: PlayPayload): List<Video> = coroutineScope {
         if (!FrSettings.useStremio || FrSettings.stremioUrls.isEmpty()) return@coroutineScope emptyList()
-        val (type, id) = stremioId(payload) ?: return@coroutineScope emptyList()
-        val jobs = StremioCatalog.streamAddonBases(type, id).map { addon ->
-            async { runCatching { streamsFrom(addon, type, id, payload) }.getOrDefault(emptyList()) }
+        val targets = streamTargets(payload)
+        val addons = StremioCatalog.streamAddons(targets)
+        val jobs = addons.flatMap { addon ->
+            addon.targets.map { target ->
+                async {
+                    runCatching {
+                        streamsFrom(addon.base, target.type, target.id, payload, addon.name)
+                    }.getOrDefault(emptyList())
+                }
+            }
         } +
             listOfNotNull(
                 payload.stremioAddon?.takeIf { payload.stremioId == payload.stremioMetaId }?.let { addon ->
-                    async {
-                        runCatching {
-                            inlineMetaStreams(addon, type, payload.stremioMetaId ?: id, payload)
-                        }.getOrDefault(emptyList())
+                    val target = targets.firstOrNull()
+                    target?.let {
+                        async {
+                            runCatching {
+                                inlineMetaStreams(addon, it.type, payload.stremioMetaId ?: it.id, payload)
+                            }.getOrDefault(emptyList())
+                        }
                     }
                 },
             )
-        jobs.awaitAll().flatten()
-            .distinctBy { "${it.videoUrl}|${it.videoTitle}" }
-            .let { videos ->
-                val limit = FrSettings.stremioMaxStreams
-                if (limit > 0) videos.take(limit) else videos
-            }
+        jobs.awaitAll().flatten().limitedDistinct()
     }
+
+    private fun List<Video>.limitedDistinct(): List<Video> =
+        distinctBy { "${it.videoUrl}|${it.videoTitle}" }.let { videos ->
+            val limit = FrSettings.stremioMaxStreams
+            if (limit > 0) videos.take(limit) else videos
+        }
+
+    private fun encodeHosterPayload(addon: StremioCatalog.StreamAddon, payload: PlayPayload): String {
+        val root = JSONObject().apply {
+            put("addon", addon.base)
+            put("name", addon.name)
+            put("payload", payload.serialize())
+            put(
+                "targets",
+                JSONArray().apply {
+                    addon.targets.forEach { target ->
+                        put(JSONObject().put("type", target.type).put("id", target.id))
+                    }
+                },
+            )
+        }
+        return "stremio-hoster/" +
+            Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(root.toString().toByteArray(Charsets.UTF_8))
+    }
+
+    private fun decodeHosterPayload(value: String?): HosterPayload? = runCatching {
+        if (value.isNullOrBlank() || !value.startsWith("stremio-hoster/")) return@runCatching null
+        val text = String(Base64.getUrlDecoder().decode(value.substringAfter('/')), Charsets.UTF_8)
+        val root = JSONObject(text)
+        val payload = PlayPayload.parse(root.getString("payload")) ?: return@runCatching null
+        val targets = root.optJSONArray("targets")?.let { array ->
+            (0 until array.length()).mapNotNull { index ->
+                val item = array.optJSONObject(index) ?: return@mapNotNull null
+                val type = item.optString("type").takeIf(String::isNotBlank) ?: return@mapNotNull null
+                val id = item.optString("id").takeIf(String::isNotBlank) ?: return@mapNotNull null
+                StremioCatalog.StreamTarget(type, id)
+            }
+        }.orEmpty()
+        HosterPayload(
+            addon = root.getString("addon"),
+            addonName = root.optString("name").ifBlank {
+                root.getString("addon").substringAfter("://").substringBefore('/')
+            },
+            payload = payload,
+            targets = targets,
+        )
+    }.getOrNull()
+
+    fun isLazyHoster(hoster: Hoster): Boolean = hoster.internalData?.startsWith("stremio-hoster/") == true
 
     private suspend fun inlineMetaStreams(
         addon: String,
@@ -75,15 +209,23 @@ object StremioClient {
         type: String,
         id: String,
         payload: PlayPayload,
+        addonLabel: String? = null,
     ): List<Video> = parseStreams(
         FrRuntime.getJson("${base(addon)}/stream/$type/$id.json"),
         addon,
         payload,
+        addonLabel,
     ).filter(NuvioClient::acceptsStream)
 
-    internal fun parseStreams(root: JSONObject, addon: String, payload: PlayPayload): List<Video> {
+    internal fun parseStreams(
+        root: JSONObject,
+        addon: String,
+        payload: PlayPayload,
+        addonLabel: String? = null,
+    ): List<Video> {
         val array = root.optJSONArray("streams") ?: return emptyList()
-        val addonName = base(addon).substringAfter("://").substringBefore('/').take(36)
+        val addonName = addonLabel?.take(36)
+            ?: base(addon).substringAfter("://").substringBefore('/').take(36)
         return (0 until array.length()).mapNotNull { index ->
             val stream = array.optJSONObject(index) ?: return@mapNotNull null
             val label = listOfNotNull(
@@ -140,7 +282,12 @@ object StremioClient {
 
     suspend fun subtitles(payload: PlayPayload): List<Track> = coroutineScope {
         if (!FrSettings.useSubtitles) return@coroutineScope emptyList()
-        val (type, id) = stremioId(payload) ?: return@coroutineScope emptyList()
+        val targets = streamTargets(payload)
+        val target = targets.firstOrNull {
+            it.id.startsWith("tt") && it.type.lowercase() in setOf("movie", "series")
+        } ?: targets.firstOrNull() ?: return@coroutineScope emptyList()
+        val type = target.type
+        val id = target.id
         val addons = (FrSettings.stremioUrls + FrSettings.DEFAULT_SUBTITLE_ADDON)
             .distinct()
             .filter { it == FrSettings.DEFAULT_SUBTITLE_ADDON || FrSettings.isStremioEnabled(it) }
@@ -202,8 +349,11 @@ object StremioClient {
         else -> null
     }
 
-    fun isPreferred(text: String): Boolean {
+    fun priorityRank(text: String): Int {
         val upper = text.uppercase()
-        return FrSettings.nuvioPriorityPatterns.take(3).any(upper::contains)
+        return FrSettings.nuvioPriorityPatterns.indexOfFirst(upper::contains)
+            .let { if (it < 0) Int.MAX_VALUE else it }
     }
+
+    fun isPreferred(text: String): Boolean = priorityRank(text) != Int.MAX_VALUE
 }

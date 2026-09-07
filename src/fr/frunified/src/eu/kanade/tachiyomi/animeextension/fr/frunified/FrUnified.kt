@@ -100,7 +100,7 @@ class FrUnified : Source() {
                     editor.putString(FrSettings.KEY_NUVIO_LANGUAGES, if (allLanguages) "all" else "fr")
                 }
                 if (!all.containsKey(FrSettings.KEY_NUVIO_CONCURRENCY)) {
-                    editor.putString(FrSettings.KEY_NUVIO_CONCURRENCY, "2")
+                    editor.putString(FrSettings.KEY_NUVIO_CONCURRENCY, "3")
                 }
 
                 val existingStremio = (all[FrSettings.KEY_STREMIO] as? String)
@@ -147,6 +147,10 @@ class FrUnified : Source() {
         FrSettings.init(preferences)
         FrRuntime.init(client)
         NuvioClient.init(context)
+        settingsScope.launch {
+            // Précharge et met en cache chaque entrée catalogs[] des manifests actifs.
+            runCatching { StremioCatalog.catalogs() }
+        }
     }
 
     override fun headersBuilder() = super.headersBuilder()
@@ -175,15 +179,37 @@ class FrUnified : Source() {
         return AnimesPage(items.map(CatalogItem::toSAnime), items.isNotEmpty())
     }
 
-    private suspend fun catalogItems(type: String, page: Int, latest: Boolean): List<CatalogItem> {
+    private suspend fun catalogItems(
+        type: String,
+        page: Int,
+        latest: Boolean,
+        stremioCatalogKey: String = FrSettings.stremioCatalogKey,
+        stremioExtras: Map<String, String> = emptyMap(),
+    ): List<CatalogItem> {
         if (
             (!FrSettings.useMainCatalogs || (!FrSettings.useTmdbCatalog && !FrSettings.useAnimeCatalog)) &&
             type != "stremio"
         ) {
-            return if (FrSettings.useStremioCatalog) StremioCatalog.browse(page) else emptyList()
+            return if (FrSettings.useStremioCatalog) {
+                StremioCatalog.browse(
+                    page,
+                    catalogKey = stremioCatalogKey,
+                    selectedExtras = stremioExtras,
+                )
+            } else {
+                emptyList()
+            }
         }
         return when (type) {
-            "stremio" -> if (FrSettings.useStremioCatalog) StremioCatalog.browse(page) else emptyList()
+            "stremio" -> if (FrSettings.useStremioCatalog) {
+                StremioCatalog.browse(
+                    page,
+                    catalogKey = stremioCatalogKey,
+                    selectedExtras = stremioExtras,
+                )
+            } else {
+                emptyList()
+            }
 
             "movie" -> if (FrSettings.useTmdbCatalog) {
                 TmdbCatalog.row(if (latest) "movie/now_playing" else "movie/popular", page, kind = "movie")
@@ -231,9 +257,14 @@ class FrUnified : Source() {
         filters: AnimeFilterList,
     ): AnimesPage = coroutineScope {
         val type = filters.filterIsInstance<ContentTypeFilter>().firstOrNull()?.value ?: catalogFilterValue()
-        persistCatalogFilter(type)
+        val stremioCatalogKey = filters.filterIsInstance<StremioCatalogFilter>()
+            .firstOrNull()?.value ?: FrSettings.stremioCatalogKey
+        val stremioExtras = filters.filterIsInstance<StremioExtraFilter>()
+            .filter { it.catalogKey == stremioCatalogKey }
+            .associate { it.extraName to it.value }
+        persistCatalogFilter(type, stremioCatalogKey)
         if (query.isBlank()) {
-            val items = catalogItems(type, page, latest = false)
+            val items = catalogItems(type, page, latest = false, stremioCatalogKey, stremioExtras)
             return@coroutineScope AnimesPage(items.map(CatalogItem::toSAnime), items.isNotEmpty())
         }
         val useStremioOnly = type == "stremio" ||
@@ -241,7 +272,7 @@ class FrUnified : Source() {
             (!FrSettings.useTmdbCatalog && !FrSettings.useAnimeCatalog)
         val jobs = buildList {
             if (FrSettings.useStremioCatalog && (useStremioOnly || type == "all")) {
-                add(async { StremioCatalog.browse(page, query) })
+                add(async { StremioCatalog.browse(page, query, stremioCatalogKey, stremioExtras) })
             }
             if (!useStremioOnly && FrSettings.useTmdbCatalog && type != "anime") {
                 add(
@@ -276,7 +307,7 @@ class FrUnified : Source() {
         }
     }
 
-    private fun persistCatalogFilter(type: String) {
+    private fun persistCatalogFilter(type: String, stremioCatalogKey: String) {
         val preference = when (type) {
             "movie" -> "movies"
             "tv" -> "series"
@@ -284,8 +315,18 @@ class FrUnified : Source() {
             "stremio" -> "stremio"
             else -> "mixed"
         }
-        if (FrSettings.popularCatalog != preference) {
-            preferences.edit().putString(FrSettings.KEY_POPULAR, preference).apply()
+        if (
+            FrSettings.popularCatalog != preference ||
+            (stremioCatalogKey.isNotBlank() && FrSettings.stremioCatalogKey != stremioCatalogKey)
+        ) {
+            preferences.edit()
+                .putString(FrSettings.KEY_POPULAR, preference)
+                .apply {
+                    if (stremioCatalogKey.isNotBlank()) {
+                        putString(FrSettings.KEY_STREMIO_CATALOG, stremioCatalogKey)
+                    }
+                }
+                .apply()
         }
     }
 
@@ -306,6 +347,33 @@ class FrUnified : Source() {
             get() = arrayOf("all", "movie", "tv", "anime", "stremio")[state]
     }
 
+    class StremioCatalogFilter(
+        private val catalogs: List<StremioCatalog.Catalog>,
+        selectedKey: String,
+    ) : AnimeFilter.Select<String>(
+        "Catalogue Stremio (chaque entrée du manifest)",
+        catalogs.map(StremioCatalog.Catalog::label).toTypedArray(),
+    ) {
+        init {
+            state = catalogs.indexOfFirst { it.key == selectedKey }
+                .takeIf { it >= 0 } ?: 0
+        }
+
+        val value: String get() = catalogs.getOrNull(state)?.key.orEmpty()
+    }
+
+    class StremioExtraFilter(
+        val catalogKey: String,
+        val extraName: String,
+        extra: StremioCatalog.Extra,
+    ) : AnimeFilter.Select<String>(
+        "Option Stremio · ${extraName.replaceFirstChar(Char::titlecase)}",
+        (if (extra.required) extra.options else listOf("Tous") + extra.options).toTypedArray(),
+    ) {
+        private val extraValues = if (extra.required) extra.options else listOf("") + extra.options
+        val value: String get() = extraValues.getOrNull(state).orEmpty()
+    }
+
     override fun getFilterList(): AnimeFilterList {
         val initialState = when {
             (
@@ -324,7 +392,32 @@ class FrUnified : Source() {
 
             else -> 0
         }
-        return AnimeFilterList(ContentTypeFilter(initialState))
+        val contentFilter = ContentTypeFilter(initialState)
+        val catalogs = StremioCatalog.cachedCatalogs()
+        if (catalogs.isEmpty()) return AnimeFilterList(contentFilter)
+
+        val selected = catalogs.firstOrNull { it.key == FrSettings.stremioCatalogKey } ?: catalogs.first()
+        val filters = buildList<AnimeFilter<*>> {
+            add(contentFilter)
+            add(
+                AnimeFilter.Header(
+                    "Chaque catalogs[] est détecté automatiquement ; réinitialiser les filtres après un ajout.",
+                ),
+            )
+            add(StremioCatalogFilter(catalogs, selected.key))
+            val extras = selected.extras.filter {
+                it.options.isNotEmpty() &&
+                    !it.name.equals("search", true) &&
+                    !it.name.equals("skip", true)
+            }
+            if (extras.isNotEmpty()) {
+                add(AnimeFilter.Header("Après un changement de catalogue : Filtrer, puis Réinitialiser les filtres."))
+                extras.forEach { extra ->
+                    add(StremioExtraFilter(selected.key, extra.name, extra))
+                }
+            }
+        }
+        return AnimeFilterList(filters)
     }
 
     // --------------------------------------------------------------- fiche
@@ -743,61 +836,48 @@ class FrUnified : Source() {
 
     // --------------------------------------------------------------- liens
 
-    override suspend fun getHosterList(episode: SEpisode): List<Hoster> {
-        val payload = PlayPayload.parse(episode.url) ?: return emptyList()
-        val engines = if (FrSettings.engineOrder == "stremio_first") {
-            listOf("stremio", "nuvio")
-        } else {
-            listOf("nuvio", "stremio")
-        }
-        for ((index, engine) in engines.withIndex()) {
-            val primary = resolveEngine(engine, payload)
-            if (primary.isEmpty()) continue
+    override suspend fun getHosterList(episode: SEpisode): List<Hoster> = coroutineScope {
+        val payload = PlayPayload.parse(episode.url) ?: return@coroutineScope emptyList()
 
-            // Un résultat VOSTFR ne doit pas masquer une VF disponible dans l'autre moteur.
-            val extraFrenchDubs = if (
-                primary.any { isVostfr(it.videoTitle) } &&
-                primary.none { isFrenchDub(it.videoTitle) }
-            ) {
-                engines.getOrNull(index + 1)
-                    ?.let { resolveEngine(it, payload) }
-                    .orEmpty()
-                    .filter { isFrenchDub(it.videoTitle) }
-            } else {
+        // Nuvio et les manifests Stremio sont découverts en parallèle. Les hosters
+        // Stremio sont volontairement paresseux : le flux n'est demandé qu'au clic,
+        // ce qui les rend visibles même lorsque Nuvio est complètement désactivé.
+        val nuvioJob = async {
+            if (!FrSettings.useNuvio) {
                 emptyList()
+            } else {
+                val found = java.util.concurrent.CopyOnWriteArrayList<Video>()
+                runCatching { NuvioClient.streams(payload) { found += it } }
+                found.toList()
             }
-            val videos = (primary + extraFrenchDubs).distinctBy { "${it.videoUrl}|${it.videoTitle}" }
-
+        }
+        val stremioJob = async {
+            runCatching { StremioClient.hosters(payload) }.getOrDefault(emptyList())
+        }
+        val nuvioVideos = nuvioJob.await()
+        val stremioHosters = stremioJob.await()
+        val tracks = if (nuvioVideos.isEmpty()) {
+            emptyList()
+        } else {
             // Les sous-titres ne doivent jamais faire expirer les URL signées.
-            val tracks = withTimeoutOrNull(3_000L) {
+            withTimeoutOrNull(3_000L) {
                 runCatching { StremioClient.subtitles(payload) }.getOrDefault(emptyList())
             }.orEmpty()
-            return videosToHosters(videos, tracks)
         }
-        return emptyList()
-    }
+        val nuvioHosters = videosToHosters(nuvioVideos, tracks, "Nuvio")
 
-    private suspend fun resolveEngine(engine: String, payload: PlayPayload): List<Video> = when (engine) {
-        "stremio" -> runCatching { StremioClient.streams(payload) }.getOrDefault(emptyList())
-
-        else -> {
-            val found = java.util.concurrent.CopyOnWriteArrayList<Video>()
-            runCatching { NuvioClient.streams(payload) { found += it } }
-            found.toList()
+        if (FrSettings.engineOrder == "stremio_first") {
+            stremioHosters + nuvioHosters
+        } else {
+            nuvioHosters + stremioHosters
         }
     }
 
-    private fun isVostfr(title: String): Boolean =
-        Regex("(^|[^A-Z0-9])VOSTF?R?([^A-Z0-9]|$)").containsMatchIn(title.uppercase())
-
-    private fun isFrenchDub(title: String): Boolean {
-        val upper = title.uppercase()
-        if (isVostfr(upper)) return false
-        return upper.contains("TRUEFRENCH") ||
-            Regex("(^|[^A-Z0-9])(VF|VFF|VFQ|MULTI)([^A-Z0-9]|$)").containsMatchIn(upper)
-    }
-
-    private fun videosToHosters(videos: List<Video>, tracks: List<Track> = emptyList()): List<Hoster> {
+    private fun videosToHosters(
+        videos: List<Video>,
+        tracks: List<Track> = emptyList(),
+        engineName: String,
+    ): List<Hoster> {
         val prepared = videos
             .distinctBy { "${it.videoUrl}|${it.videoTitle}" }
             .map { video ->
@@ -809,25 +889,49 @@ class FrUnified : Source() {
                     )
                 }
             }
-            .sortedWith(compareByDescending<Video> { it.preferred }.thenByDescending { it.resolution ?: 0 })
+            .sortedWith(videoComparator())
 
         return prepared.groupBy { video ->
             video.videoTitle.substringBefore(" • ").substringBefore(" · ").ifBlank { "FR Unifié" }
         }.map { (provider, providerVideos) ->
             Hoster(
                 hosterUrl = "frunified://${provider.hashCode()}",
-                hosterName = provider,
+                hosterName = "$engineName · $provider",
                 videoList = providerVideos,
             )
-        }.sortedBy { it.hosterName.lowercase() }
+        }.sortedWith(hosterComparator())
     }
 
-    override suspend fun getVideoList(hoster: Hoster): List<Video> = hoster.videoList.orEmpty()
+    override suspend fun getVideoList(hoster: Hoster): List<Video> = if (StremioClient.isLazyHoster(hoster)) {
+        runCatching { StremioClient.streams(hoster) }.getOrDefault(emptyList()).sortedWith(videoComparator())
+    } else {
+        hoster.videoList.orEmpty().sortedWith(videoComparator())
+    }
 
-    override fun List<Hoster>.sortHosters(): List<Hoster> = sortedBy { it.hosterName.lowercase() }
+    override fun List<Hoster>.sortHosters(): List<Hoster> = sortedWith(hosterComparator())
 
-    override fun List<Video>.sortVideos(): List<Video> =
-        sortedWith(compareByDescending<Video> { it.preferred }.thenByDescending { it.resolution ?: 0 })
+    override fun List<Video>.sortVideos(): List<Video> = sortedWith(videoComparator())
+
+    private fun videoComparator(): Comparator<Video> =
+        compareBy<Video> { StremioClient.priorityRank(it.videoTitle) }
+            .thenByDescending { it.preferred }
+            .thenByDescending { it.resolution ?: 0 }
+
+    private fun hosterComparator(): Comparator<Hoster> =
+        compareBy<Hoster> { hoster ->
+            val stremio = hoster.hosterName.startsWith("Stremio ·")
+            if (FrSettings.engineOrder == "stremio_first") {
+                if (stremio) 0 else 1
+            } else {
+                if (stremio) 1 else 0
+            }
+        }.thenBy { hoster ->
+            minOf(
+                StremioClient.priorityRank(hoster.hosterName),
+                hoster.videoList.orEmpty().minOfOrNull { StremioClient.priorityRank(it.videoTitle) }
+                    ?: Int.MAX_VALUE,
+            )
+        }.thenBy { it.hosterName.lowercase() }
 
     override fun getAnimeUrl(anime: SAnime): String {
         val id = CatalogId.parse(anime.url) ?: return baseUrl
@@ -923,7 +1027,7 @@ class FrUnified : Source() {
         action(
             "action_nuvio_languages",
             "3 · NUVIO — langues des serveurs",
-            "Filtre les sources chargées depuis tous les dépôts configurés.",
+            "Filtre les sources exécutées ; le sélecteur affiche tout le contenu des dépôts.",
         ) { showNuvioLanguagePicker(context) }
         action(
             "action_nuvio_diagnostic",
@@ -935,6 +1039,26 @@ class FrUnified : Source() {
             "3 · NUVIO — ajouter un dépôt",
             "Seul endroit où coller une URL Nuvio (manifest avec scrapers[]).",
         ) { showExternalSourceDialog(context, ExternalSourceImporter.Kind.NUVIO) }
+        edit(
+            FrSettings.KEY_NUVIO_ORDER,
+            FrSettings.RECOMMENDED_NUVIO_IDS.joinToString("\n"),
+            "3 · Ordre de priorité des serveurs Nuvio",
+            "Un identifiant par ligne. Les sources absentes sont ajoutées ensuite.",
+        )
+        edit(
+            FrSettings.KEY_NUVIO_PRIORITY,
+            FrSettings.DEFAULT_NUVIO_PRIORITY.joinToString(","),
+            "3 · Priorités des flux",
+            "Motifs ordonnés (serveur, VF, VOSTFR, qualité), séparés par des virgules.",
+            multiline = false,
+        )
+        list(
+            FrSettings.KEY_NUVIO_CONCURRENCY,
+            "3",
+            "3 · Scrapeurs simultanés",
+            arrayOf("2 — prudent", "3 — recommandé", "4 — rapide"),
+            arrayOf("2", "3", "4"),
+        )
         list(
             FrSettings.KEY_NUVIO_SEARCH_MODE,
             "fast",
@@ -958,7 +1082,7 @@ class FrUnified : Source() {
             FrSettings.KEY_USE_STREMIO,
             true,
             "4 · STREMIO — lecture activée",
-            "Utilisé en premier ou en repli selon l’ordre choisi",
+            "Serveurs affichés même sans Nuvio, puis classés selon l’ordre choisi",
         )
         action(
             "action_stremio_sources",
@@ -984,6 +1108,33 @@ class FrUnified : Source() {
             "4 · Langues des sous-titres",
             "Codes séparés par des virgules.",
             multiline = false,
+        )
+
+        edit(
+            FrSettings.KEY_TOKENS,
+            "",
+            "5 · Avancé — clés API Nuvio",
+            "Une ligne NOM=valeur ; injectée uniquement dans process.env du provider.",
+        )
+        edit(
+            FrSettings.KEY_UA,
+            FrSettings.DEFAULT_USER_AGENT,
+            "5 · Avancé — User-Agent Nuvio",
+            "User-Agent des requêtes JS et des contrôles de flux.",
+            multiline = false,
+        )
+        edit(
+            FrSettings.KEY_REFERER,
+            "https://www.google.com/",
+            "5 · Avancé — Referer Nuvio",
+            "Referer HTTP par défaut utilisé par les providers.",
+            multiline = false,
+        )
+        edit(
+            FrSettings.KEY_COOKIES,
+            "",
+            "5 · Avancé — cookies Nuvio",
+            "Cookies facultatifs pour les domaines protégés.",
         )
     }
 
@@ -1051,29 +1202,34 @@ class FrUnified : Source() {
                     .setNegativeButton("Annuler", null)
                     .setNeutralButton("Conseillées", null)
                     .setPositiveButton("Enregistrer") { _, _ ->
-                        val visible = choices.map(SourceChoice::value).toSet()
+                        val visible = choices.map { it.value.lowercase() }.toSet()
                         val enabled = if (wildcardMode) {
                             val oldHiddenExclusions = FrSettings.nuvioEnabled
-                                .filter { it.startsWith('!') && it.removePrefix("!") !in visible }
+                                .filter { it.startsWith('!') && it.removePrefix("!").lowercase() !in visible }
                             listOf("all") +
                                 oldHiddenExclusions +
                                 choices.indices.filter { !checked[it] }.map { "!${choices[it].value}" }
                         } else {
                             val oldHiddenExplicit = FrSettings.nuvioEnabled.filter { value ->
-                                value != "all" && !value.startsWith('!') && value !in visible
+                                value != "all" && !value.startsWith('!') && value.lowercase() !in visible
                             }
                             oldHiddenExplicit + choices.indices.filter { checked[it] }.map { choices[it].value }
                         }
-                        val selectedOrder = FrSettings.RECOMMENDED_NUVIO_IDS.filter { recommended ->
-                            choices.indexOfFirst { it.value == recommended }
-                                .let { index -> index >= 0 && checked[index] }
+                        val checkedIds = choices.indices.filter { checked[it] }.map { choices[it].value }
+                        val selectedOrder = FrSettings.nuvioOrder.mapNotNull { ordered ->
+                            checkedIds.firstOrNull { it.equals(ordered, true) }
                         } +
-                            choices.indices.filter { checked[it] }.map { choices[it].value }
+                            checkedIds
                         preferences.edit()
-                            .putString(FrSettings.KEY_NUVIO_ENABLED, enabled.distinct().joinToString("\n"))
+                            .putString(
+                                FrSettings.KEY_NUVIO_ENABLED,
+                                enabled.distinctBy(String::lowercase).joinToString("\n"),
+                            )
                             .putString(
                                 FrSettings.KEY_NUVIO_ORDER,
-                                (selectedOrder + FrSettings.nuvioOrder).distinct().joinToString("\n"),
+                                (selectedOrder + FrSettings.nuvioOrder)
+                                    .distinctBy(String::lowercase)
+                                    .joinToString("\n"),
                             )
                             .apply()
                         displayToast("Nuvio : ${checked.count { it }} source(s) active(s)")
@@ -1083,7 +1239,9 @@ class FrUnified : Source() {
                     dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
                         wildcardMode = false
                         choices.indices.forEach { index ->
-                            checked[index] = choices[index].value in FrSettings.RECOMMENDED_NUVIO_IDS
+                            checked[index] = FrSettings.RECOMMENDED_NUVIO_IDS.any {
+                                it.equals(choices[index].value, true)
+                            }
                             dialog.listView.setItemChecked(index, checked[index])
                         }
                     }
@@ -1350,6 +1508,9 @@ class FrUnified : Source() {
             }
         }
         editor.apply()
+        if (result.kind == ExternalSourceImporter.Kind.NUVIO) {
+            NuvioClient.invalidateRepository(result.url)
+        }
     }
 
     private fun PreferenceScreen.action(

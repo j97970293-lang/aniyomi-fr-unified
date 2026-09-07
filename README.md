@@ -1,26 +1,28 @@
 # FR Unifié pour Aniyomi
 
-**FR Unifié 16.6** est une extension Aniyomi autonome qui réunit catalogues, fiches, épisodes et sources de lecture dans une seule interface.
+**FR Unifié 16.7** est une extension Aniyomi autonome qui réunit catalogues, fiches, épisodes et sources de lecture dans une seule interface.
 
 ## Fonctions principales
 
 - catalogues **TMDB**, **AniList**, **Jikan/MyAnimeList** et **Stremio** ;
 - activation indépendante de TMDB, AniList et Jikan, ou désactivation globale des catalogues principaux ;
-- choix d’un catalogue fourni par un addon Stremio ;
+- détection automatique de **chaque entrée `catalogs[]`** de chaque manifest Stremio, exposée séparément dans les filtres avec ses options (genre, année, langue…) ;
 - recherche, fiches, saisons et épisodes Stremio, y compris `meta.streams` et les flux TV directs ;
+- serveurs Stremio visibles et chargés à la demande même lorsque Nuvio est désactivé, avec conversion des identifiants IMDb/TMDB et des types `series`/`tv` ;
 - choix de l’ordre des moteurs : **Nuvio puis Stremio** ou **Stremio puis Nuvio** ;
-- sources Nuvio activables individuellement, issues de dépôts français et internationaux ;
+- sources Nuvio activables individuellement, issues de dépôts français et internationaux, et interrogées simultanément par lots bornés ;
 - langues de catalogue et de providers configurables ;
 - titres de flux indiquant autant que possible la langue (VF, VFF, VFQ, MULTI, VOSTFR), le lecteur et la qualité ;
 - transmission des en-têtes HTTP nécessaires au lecteur ;
 - contrôle léger des flux avant lecture et rejet des refus HTTP explicites, notamment les 403 ;
-- sous-titres externes Stremio/OpenSubtitles.
+- sous-titres externes Stremio/OpenSubtitles ;
+- réglages avancés conservés : ordre des providers, motifs de priorité, concurrence, clés API, User-Agent, Referer et cookies.
 
 CloudStream n’est plus intégré : les fichiers `.cs3` et les `repo.json` sont refusés. Utilisez un manifest **Nuvio** ou **Stremio** directement exécutable.
 
 ## Correction des séries en cours
 
-La version 16.6 ne limite plus une série à 24 épisodes lorsqu’AniList ne fournit pas de total définitif. Elle utilise, dans l’ordre disponible :
+Depuis la version 16.6, une série n’est plus limitée à 24 épisodes lorsqu’AniList ne fournit pas de total définitif. Elle utilise, dans l’ordre disponible :
 
 1. le total annoncé par le catalogue ;
 2. le prochain épisode AniList moins un ;
@@ -47,6 +49,8 @@ Les langues proposées sont :
 
 Plusieurs langues peuvent être cochées. La langue principale pilote TMDB et les fiches ; les locales Stremio correspondantes sont ajoutées au sélecteur de catalogues.
 
+Un manifest Stremio n’est plus réduit à une seule rangée : toutes ses entrées `catalogs[]` deviennent des choix distincts dans les filtres de recherche. Après l’ajout d’un manifest ou le changement de catalogue, utilisez **Réinitialiser les filtres** afin de charger la liste et ses options propres.
+
 ## Sources Nuvio
 
 Les dépôts proposés couvrent actuellement :
@@ -58,6 +62,18 @@ Les dépôts proposés couvrent actuellement :
 - Turkish Nuvio.
 
 Sur une nouvelle installation, tous les providers compatibles avec les langues sélectionnées sont autorisés. Une source peut être décochée individuellement. **Movix est exclu par défaut** tant que ses flux de test répondent 403, mais reste visible dans le sélecteur.
+
+Le sélecteur affiche les providers de **tous les dépôts ajoutés**, même si leur langue n’est pas encore activée pour la lecture, s’ils sont désactivés dans le manifest ou si leur type n’est pas encore reconnu. Les filtres de langue, de type et d’activation ne s’appliquent qu’à leur exécution. Lorsqu’un dépôt ajouté contient le même identifiant qu’un dépôt par défaut, sa variante la plus récemment ajoutée est celle qui apparaît et s’exécute. Les dépôts saisis manuellement restent optionnels et ne sont pas ajoutés aux valeurs par défaut de l’extension.
+
+### Dépôt All-in-One-Nuvio optionnel
+
+Le dépôt demandé peut être ajouté manuellement depuis **Nuvio → ajouter un dépôt**, avec une seule saisie d’URL :
+
+```text
+https://raw.githubusercontent.com/D3adlyRocket/All-in-One-Nuvio/refs/heads/main/manifest.json
+```
+
+Une fois l’import confirmé, ouvrez **Nuvio → choisir les sources** : les **61 plugins** actuellement déclarés apparaissent individuellement dans le sélecteur. Ce dépôt a été testé pour l’import, mais il reste volontairement absent de la configuration par défaut.
 
 Les bundles internationaux utilisent parfois des fonctions Node ou des sites qui changent sans préavis. Le moteur apporte des polyfills Rhino, abaisse les boucles `for…of` et corrige plusieurs incompatibilités de portée, mais la disponibilité d’un provider tiers n’est jamais garantie.
 
@@ -78,7 +94,7 @@ Puis installez **FR Unifié** depuis **Parcourir → Extensions Anime**.
 Le fichier de version est nommé :
 
 ```text
-FR-Unifie-Aniyomi-v16.6.apk
+FR-Unifie-Aniyomi-v16.7.apk
 ```
 
 Android peut demander l’autorisation d’installer depuis la source utilisée. Lors du premier lancement, Aniyomi peut aussi demander de faire confiance au certificat de l’extension.
@@ -88,13 +104,15 @@ Compatibilité : **API d’extension Aniyomi 16**, **Android 8.0 / API 26 minimu
 ## Réglages conseillés
 
 1. Dans **Catalogues**, activez les services souhaités et choisissez les langues.
-2. Si vous voulez uniquement Stremio, désactivez **Catalogues principaux**, gardez **Catalogue Stremio** actif, puis choisissez sa rangée.
-3. Choisissez la priorité **Nuvio/Stremio**.
-4. Dans **Nuvio**, choisissez les langues puis ouvrez le sélecteur des sources.
-5. Dans **Stremio**, activez les addons désirés.
-6. Utilisez les actions d’ajout propres à Nuvio ou Stremio pour coller un nouveau manifest ; il n’existe pas de champ d’import générique redondant.
+2. Dans les filtres de recherche, choisissez **Stremio**, puis l’une des entrées détectées dans `catalogs[]` et, si disponible, son option de genre/année/langue.
+3. Si vous voulez uniquement Stremio, désactivez **Catalogues principaux** et gardez **Catalogue Stremio** actif.
+4. Choisissez la priorité **Nuvio/Stremio**.
+5. Dans **Nuvio**, ouvrez le sélecteur pour voir tous les plugins ajoutés, puis choisissez les langues réellement exécutées.
+6. Réglez au besoin l’ordre des providers, les motifs de priorité et le nombre de scrapeurs simultanés (3 recommandé).
+7. Dans **Stremio**, activez les addons désirés.
+8. Utilisez les actions d’ajout propres à Nuvio ou Stremio pour coller un nouveau manifest ; il n’existe pas de champ d’import générique redondant.
 
-Le diagnostic Nuvio teste le chemin réel Kotlin → Rhino → réseau. Une réussite VOSTFR ne stoppe pas la recherche lorsqu’une VF peut encore être trouvée par l’autre moteur.
+Le diagnostic Nuvio teste le chemin réel Kotlin → Rhino → réseau. Les providers sont lancés simultanément par lots bornés, et une réussite VOSTFR ne stoppe pas la recherche tant qu’une VF peut encore être trouvée. Les hosters des deux moteurs restent disponibles dans l’ordre choisi.
 
 ## Compilation locale
 

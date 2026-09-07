@@ -1,5 +1,20 @@
 # Journal des modifications
 
+## 16.7 — 6 septembre 2026
+
+- détection, cache et exposition **séparée de chaque entrée `catalogs[]`** de tous les manifests Stremio actifs, dans un filtre dynamique inspiré de l’extension Secozzi ;
+- prise en charge des options propres au catalogue sélectionné (genre, année, langue…) et application réelle de ce choix à la requête Stremio ;
+- serveurs Stremio désormais exposés dès le manifest puis chargés au clic, afin qu’ils restent visibles lorsque Nuvio est désactivé ;
+- résolution Stremio renforcée avec variantes d’identifiants IMDb/TMDB et types `series`/`tv`, flux HTTP ou torrents, en-têtes, qualité et sous-titres ;
+- Nuvio et Stremio restent tous deux visibles selon l’ordre choisi, afin qu’un résultat VOSTFR d’un moteur ne masque jamais une VF de l’autre ;
+- modes Nuvio rapide et équilibré convertis en exécution simultanée par lots bornés de 2 à 4 providers ; le mode rapide poursuit les lots lorsqu’il n’a trouvé que du VOSTFR ;
+- rétablissement permanent des réglages avancés utiles : ordre des providers, motifs de priorité, concurrence, clés API, User-Agent, Referer et cookies, sans ajouter de champ URL redondant ;
+- le sélecteur Nuvio affiche désormais tous les providers de tous les dépôts ajoutés avant le filtre de langues, y compris ceux désactivés dans leur manifest ou déclarant un type encore inconnu ; un dépôt ajouté plus tard remplace la variante par défaut portant le même identifiant ;
+- actualisation immédiate du cache après l’ajout d’un dépôt Nuvio ;
+- découverte Stremio parallèle bornée à 10 secondes par manifest et cache de catalogues trié/stable, réécrit uniquement lorsque son contenu change ;
+- validation spécifique du dépôt optionnel All-in-One-Nuvio fourni par l’utilisateur (**61 providers détectés sans l’intégrer aux dépôts par défaut**) ;
+- conservation de toutes les corrections 16.6 : One Piece non tronqué, catalogues principaux désactivables, langues multiples, sélection individuelle, en-têtes et rejet des flux explicitement refusés.
+
 ## 16.6 — 6 septembre 2026
 
 - correction de **One Piece** et des autres séries en cours : suppression du repli fixe à 24 épisodes, prise en compte de `nextAiringEpisode` d’AniList et comptage paginé Jikan jusqu’à la dernière page disponible ;

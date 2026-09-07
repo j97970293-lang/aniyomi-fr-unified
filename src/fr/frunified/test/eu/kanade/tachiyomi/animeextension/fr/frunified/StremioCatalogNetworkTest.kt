@@ -27,12 +27,21 @@ class StremioCatalogNetworkTest {
         )
         FrRuntime.initForTests { url -> URI(url).toURL().readText() }
 
-        val catalogs = StremioCatalog.catalogs()
-        assertTrue("No Stremio catalogs", catalogs.size >= 10)
+        val catalogs = StremioCatalog.catalogs().filter { it.addonBase == base }
+        assertTrue("All catalogs[] entries are not exposed separately", catalogs.size >= 12)
+        assertEquals(catalogs.size, catalogs.distinctBy { it.key }.size)
         assertEquals("series", StremioCatalog.selectedCatalog()?.type)
 
         val popular = StremioCatalog.browse(1)
         assertTrue("Empty localized Stremio catalog", popular.isNotEmpty())
+
+        val byYear = catalogs.first { it.type == "series" && it.id == "tmdb.year" }
+        val filtered = StremioCatalog.browse(
+            page = 1,
+            catalogKey = byYear.key,
+            selectedExtras = mapOf("genre" to "2026"),
+        )
+        assertTrue("Selected catalog extra returned no 2026 series", filtered.isNotEmpty())
 
         val results = StremioCatalog.browse(1, "One Piece")
         assertTrue("One Piece missing from Stremio search", results.any { it.title.contains("One Piece", true) })
