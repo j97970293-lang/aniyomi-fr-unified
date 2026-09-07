@@ -1,5 +1,15 @@
 # Journal des modifications
 
+## 16.8 — 7 septembre 2026
+
+- classement des sources Nuvio à l’aide de flèches (tout en haut, monter, descendre, tout en bas) avec enregistrement immédiat ; le champ texte de l’ordre reste disponible pour les cas avancés ;
+- drapeaux de langue (emoji) affichés dans le sélecteur des sources, des langues de sources et des langues de catalogue, à la place des seuls libellés textuels ;
+- organisation des saisons réglable (« Classique », « Fusionnées » ou « Séparées ») : fusionnées = tous les épisodes de toutes les saisons dans une seule fiche, renumérotés et libellés `S1 E1 — titre`, avec palier « Toutes les saisons » pour les fiches enregistrées avant l’activation ; séparées = découpage « Titre — Saison N » dès le catalogue ; le comportement historique reste la valeur par défaut et les deux nouveaux modes sont désactivables ;
+- rejet des « téléchargements » qui ramènent une page HTML ou une popup (FrenchStream et autres) : les sondes vérifient désormais le type de contenu et l’échantillon du corps (DOCTYPE, `<html>`, `window.open`, popunder, Adsterra…) et écartent ces liens avec la mention « page HTML/popup » dans le diagnostic, sans confondre avec les vrais 403/404 ; vérification désactivable par réglage ;
+- réglage « DNS personnalisé » avec résolveur DNS UDP intégré (requêtes A puis AAAA, cache positif/négatif, bascule automatique sur le DNS du système en cas d’échec), appliqué aux catalogues, manifests, sources, sondes et sous-titres, avec action « Tester la résolution DNS » ;
+- fiabilisation Stremio : chaque addon de flux est borné à 15 secondes afin qu’un addon lent ne bloque plus l’affichage des serveurs ;
+- écran des réglages réorganisé en six sections titrées (catalogues, lecture, sources Nuvio, Stremio, réseau, aide) et guide des réglages lisible.
+
 ## 16.7 — 6 septembre 2026
 
 - détection, cache et exposition **séparée de chaque entrée `catalogs[]`** de tous les manifests Stremio actifs, dans un filtre dynamique inspiré de l’extension Secozzi ;

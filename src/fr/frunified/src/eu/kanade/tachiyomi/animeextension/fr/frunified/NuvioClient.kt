@@ -44,7 +44,6 @@ object NuvioClient {
 
     private const val NETWORK_TIMEOUT_MS = 10_000
     private const val PROBE_TIMEOUT_MS = 5_000
-    private const val PROBE_BODY_LIMIT = 256 * 1024
     private const val RHINO_STACK_BYTES = 2L * 1024 * 1024
 
     data class NuvioScraper(
@@ -1140,13 +1139,23 @@ object NuvioClient {
 
     // ------------------------------------------------------- réseau
 
-    private data class StreamProbe(val status: Int, val body: String?)
+    /** Octets lus au début d'un lien direct (sondes anti-page HTML/popup). */
+    private const val HEAD_PROBE_BYTES = 4 * 1024
+
+    /** Octets lus pour une playlist HLS. */
+    private const val PLAYLIST_PROBE_BYTES = 192 * 1024
+
+    /** Code interne : le lien répond par une page HTML (popup/pub) et non par une vidéo. */
+    private const val HTML_POPUP_STATUS = 490
+
+    private data class StreamProbe(val status: Int, val body: String?, val contentType: String?)
 
     /**
      * Écarte avant affichage un lien que le CDN refuse déjà (notamment les 403
      * FSVid/Movix). Pour HLS, sonde aussi le premier segment sans le télécharger.
      * Une panne de sonde (status 0) ne supprime pas le lien : seuls les refus
-     * explicites sont éliminés.
+     * explicites et les pages HTML (popups téléchargées à la place de la vidéo)
+     * sont éliminés.
      */
     internal fun acceptsStream(video: Video): Boolean = deniedStreamStatus(video) == null
 
@@ -1157,18 +1166,28 @@ object NuvioClient {
             video.headers?.get(name)?.let { requestHeaders[name] = it }
         }
         val lower = initialUrl.lowercase()
-        if (!lower.contains(".m3u8") && !lower.contains("/hls")) {
-            val probe = probeRequest(initialUrl, requestHeaders, readBody = false)
+        val hls = lower.contains(".m3u8") || lower.contains("/hls")
+        if (!hls) {
+            val probe = probeRequest(initialUrl, requestHeaders, capBytes = HEAD_PROBE_BYTES, ranged = true)
             recordProbe(initialUrl, probe.status)
-            return probe.status.takeIf(::isDeniedStatus)
+            if (isDeniedStatus(probe.status)) return probe.status
+            if (probe.status in 200..399 && isPopupBody(probe.body, probe.contentType)) {
+                recordProbe(initialUrl, HTML_POPUP_STATUS)
+                return HTML_POPUP_STATUS
+            }
+            return null
         }
 
         var playlistUrl = initialUrl
         repeat(2) {
-            val playlist = probeRequest(playlistUrl, requestHeaders, readBody = true)
+            val playlist = probeRequest(playlistUrl, requestHeaders, capBytes = PLAYLIST_PROBE_BYTES, ranged = false)
             recordProbe(playlistUrl, playlist.status)
             if (isDeniedStatus(playlist.status)) return playlist.status
             if (playlist.status !in 200..399 || playlist.body.isNullOrBlank()) return null
+            if (isPopupBody(playlist.body, playlist.contentType)) {
+                recordProbe(playlistUrl, HTML_POPUP_STATUS)
+                return HTML_POPUP_STATUS
+            }
             val next = playlist.body.lineSequence()
                 .map(String::trim)
                 .firstOrNull { it.isNotBlank() && !it.startsWith('#') }
@@ -1177,12 +1196,40 @@ object NuvioClient {
             if (resolved.lowercase().contains(".m3u8")) {
                 playlistUrl = resolved
             } else {
-                val segment = probeRequest(resolved, requestHeaders, readBody = false)
+                val segment = probeRequest(resolved, requestHeaders, capBytes = HEAD_PROBE_BYTES, ranged = true)
                 recordProbe(resolved, segment.status)
-                return segment.status.takeIf(::isDeniedStatus)
+                if (isDeniedStatus(segment.status)) return segment.status
+                if (segment.status in 200..399 && isPopupBody(segment.body, segment.contentType)) {
+                    recordProbe(resolved, HTML_POPUP_STATUS)
+                    return HTML_POPUP_STATUS
+                }
+                return null
             }
         }
         return null
+    }
+
+    /**
+     * Détecte une réponse HTML (popup, page intermédiaire, publicité) déguisée en
+     * lien vidéo — c'est ce que le téléchargeur enregistrait « à la place » du flux.
+     * Les corps binaires (mp4, ts, mkv…) ne sont jamais confondus avec du HTML.
+     */
+    private fun isPopupBody(body: String?, contentType: String?): Boolean {
+        if (!FrSettings.verifyStreamContent) return false
+        val ct = contentType.orEmpty().lowercase()
+        if (ct.contains("text/html")) return true
+        val mediaLike = ct.contains("json") || ct.contains("octet") || ct.contains("mpegurl") ||
+            ct.contains("video") || ct.contains("audio") || ct.contains("mp4") ||
+            ct.contains("mp2t") || ct.contains("quicktime") || ct.contains("matroska")
+        if (ct.isNotEmpty() && mediaLike) return false
+        if (body.isNullOrBlank()) return false
+        val sample = body.take(12_000).lowercase()
+        return sample.startsWith("<!doctype") ||
+            sample.startsWith("<html") ||
+            sample.contains("<script") ||
+            sample.contains("window.open(") ||
+            sample.contains("popunder") ||
+            sample.contains("adsterra")
     }
 
     private fun isDeniedStatus(status: Int): Boolean = status in setOf(401, 403, 404, 410, 429, 451)
@@ -1192,44 +1239,86 @@ object NuvioClient {
             runCatching {
                 val host = URL(url).host.ifBlank { "?" }
                 val list = fetchLog.computeIfAbsent(id) { mutableListOf() }
-                list.add("PROBE $host → $status")
+                val detail = if (status == HTML_POPUP_STATUS) " (page HTML/popup)" else ""
+                list.add("PROBE $host → $status$detail")
                 while (list.size > 40) list.removeAt(0)
             }
         }
     }
 
-    private fun probeRequest(url: String, headers: Map<String, String>, readBody: Boolean): StreamProbe {
+    private fun probeRequest(
+        url: String,
+        headers: Map<String, String>,
+        capBytes: Int,
+        ranged: Boolean,
+    ): StreamProbe {
+        // Sur l'appareil, la sonde passe par le client OkHttp qui utilise le DNS
+        // personnalisé de l'extension. En test JVM (pas de client), on retombe sur
+        // une connexion Java directe afin de conserver les bancs d'essai locaux.
+        if (FrRuntime.isHttpReady) {
+            val extra = linkedMapOf<String, String>()
+            extra.putAll(headers)
+            if (ranged && extra.keys.none { it.equals("Range", true) }) {
+                extra["Range"] = "bytes=0-${capBytes - 1}"
+            }
+            if (extra.keys.none { it.equals("User-Agent", true) }) {
+                extra["User-Agent"] = FrSettings.nuvioUserAgent.ifBlank { FrSettings.DEFAULT_USER_AGENT }
+            }
+            val result = FrRuntime.rawExecute(url, "GET", extra, probe = true, maxBytes = capBytes)
+                ?: return StreamProbe(0, null, null)
+            return StreamProbe(
+                result.status,
+                result.body.takeIf(String::isNotBlank),
+                result.contentType,
+            )
+        }
+        return legacyProbe(url, headers, capBytes, ranged)
+    }
+
+    private fun legacyProbe(
+        url: String,
+        headers: Map<String, String>,
+        capBytes: Int,
+        ranged: Boolean,
+    ): StreamProbe {
         val conn = runCatching { URL(url).openConnection() as HttpURLConnection }.getOrNull()
-            ?: return StreamProbe(0, null)
+            ?: return StreamProbe(0, null, null)
         return try {
             conn.requestMethod = "GET"
             conn.connectTimeout = PROBE_TIMEOUT_MS
             conn.readTimeout = PROBE_TIMEOUT_MS
             conn.instanceFollowRedirects = true
             conn.setRequestProperty("User-Agent", FrSettings.nuvioUserAgent.ifBlank { FrSettings.DEFAULT_USER_AGENT })
-            conn.setRequestProperty("Accept", if (readBody) "application/vnd.apple.mpegurl,*/*" else "*/*")
+            conn.setRequestProperty("Accept", if (ranged) "*/*" else "application/vnd.apple.mpegurl,*/*")
             conn.setRequestProperty("Accept-Encoding", "identity")
             headers.forEach { (name, value) -> runCatching { conn.setRequestProperty(name, value) } }
-            if (!readBody) conn.setRequestProperty("Range", "bytes=0-1023")
+            if (ranged) conn.setRequestProperty("Range", "bytes=0-${capBytes - 1}")
 
             val status = conn.responseCode
-            val body = if (readBody && status in 200..399) {
-                conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                    buildString {
-                        while (length < PROBE_BODY_LIMIT) {
-                            val line = reader.readLine() ?: break
-                            appendLine(line)
-                            if (line.isNotBlank() && !line.trimStart().startsWith('#')) break
-                        }
+            val body = if (status in 200..399) {
+                val input = conn.inputStream
+                val buffer = java.io.ByteArrayOutputStream(capBytes)
+                val chunk = ByteArray(4096)
+                var total = 0
+                try {
+                    while (total < capBytes) {
+                        val read = input.read(chunk, 0, minOf(chunk.size, capBytes - total))
+                        if (read < 0) break
+                        buffer.write(chunk, 0, read)
+                        total += read
                     }
+                } catch (_: Throwable) {
+                } finally {
+                    runCatching { input.close() }
                 }
+                String(buffer.toByteArray(), Charsets.ISO_8859_1).takeIf { it.isNotBlank() }
             } else {
                 runCatching { conn.errorStream?.close() }
                 null
             }
-            StreamProbe(status, body)
+            StreamProbe(status, body, null)
         } catch (_: Throwable) {
-            StreamProbe(0, null)
+            StreamProbe(0, null, null)
         } finally {
             runCatching { conn.disconnect() }
         }
@@ -1239,6 +1328,25 @@ object NuvioClient {
         doHttp(url, "GET", extraHeaders, null).second
 
     private fun doHttp(
+        url: String,
+        method: String,
+        headers: Map<String, String>,
+        body: String?,
+    ): Pair<Int, String> {
+        val effective = linkedMapOf<String, String>()
+        effective.putAll(headers)
+        if (effective.keys.none { it.equals("User-Agent", true) }) {
+            effective["User-Agent"] = FrSettings.nuvioUserAgent.ifBlank { FrSettings.DEFAULT_USER_AGENT }
+        }
+        if (FrRuntime.isHttpReady) {
+            val result = FrRuntime.rawExecute(url, method, effective, body)
+                ?: return 0 to ""
+            return result.status to result.body
+        }
+        return legacyDoHttp(url, method, effective, body)
+    }
+
+    private fun legacyDoHttp(
         url: String,
         method: String,
         headers: Map<String, String>,
@@ -1254,10 +1362,12 @@ object NuvioClient {
             conn.connectTimeout = NETWORK_TIMEOUT_MS
             conn.readTimeout = 25_000
             conn.instanceFollowRedirects = true
-            conn.setRequestProperty(
-                "User-Agent",
-                "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36",
-            )
+            if (headers.keys.none { it.equals("User-Agent", true) }) {
+                conn.setRequestProperty(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36",
+                )
+            }
             conn.setRequestProperty("Accept", "*/*")
             conn.setRequestProperty("Accept-Language", "fr-FR,fr;q=0.9,en;q=0.8")
             conn.setRequestProperty("Accept-Encoding", "identity")

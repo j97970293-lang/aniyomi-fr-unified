@@ -5,7 +5,16 @@ import android.content.SharedPreferences
 /** Préférences partagées par les catalogues, Stremio et le moteur Nuvio. */
 object FrSettings {
     const val KEY_SETTINGS_VERSION = "fr_unified_settings_version"
-    const val SETTINGS_VERSION = 5
+    const val SETTINGS_VERSION = 6
+
+    /** DNS UDP personnalisés (un par ligne) utilisés par tout le réseau de l'extension. */
+    const val KEY_DNS_HOSTS = "dns_hosts"
+
+    /** Organisation des saisons dans les fiches : classique, fusionnées ou séparées. */
+    const val KEY_SERIES_LAYOUT = "series_layout"
+
+    /** Vérification du contenu des liens (anti-popups / anti-pages HTML) avant lecture. */
+    const val KEY_VERIFY_STREAM_CONTENT = "verify_stream_content"
 
     const val KEY_STREMIO = "stremio_urls"
     const val KEY_STREMIO_DISABLED = "stremio_disabled"
@@ -63,6 +72,47 @@ object FrSettings {
         "pl-PL" to "Polski",
         "ar-SA" to "العربية",
     )
+
+    /** Drapeau emoji d'une langue (affiché à la place du texte de pays dans les listes). */
+    val LANGUAGE_FLAGS = mapOf(
+        "fr" to "🇫🇷",
+        "en" to "🇬🇧",
+        "es" to "🇪🇸",
+        "de" to "🇩🇪",
+        "it" to "🇮🇹",
+        "pt" to "🇵🇹",
+        "ja" to "🇯🇵",
+        "hi" to "🇮🇳",
+        "tr" to "🇹🇷",
+        "id" to "🇮🇩",
+        "pl" to "🇵🇱",
+        "ar" to "🇸🇦",
+        "ta" to "🇮🇳",
+        "te" to "🇮🇳",
+        "ml" to "🇮🇳",
+        "kn" to "🇮🇳",
+        "el" to "🇬🇷",
+        "nl" to "🇳🇱",
+        "ko" to "🇰🇷",
+        "zh" to "🇨🇳",
+        "ru" to "🇷🇺",
+        "th" to "🇹🇭",
+        "vi" to "🇻🇳",
+    )
+
+    /** Drapeau représentant une liste de langues ; « 🌐 » si plusieurs langues différentes. */
+    fun flagForLanguages(languages: List<String>): String {
+        val normalized = languages
+            .map { it.lowercase().substringBefore('-').trim() }
+            .filter(String::isNotBlank)
+            .distinct()
+        val flag = normalized.singleOrNull()?.let { LANGUAGE_FLAGS[it] }
+        return flag ?: "🌐"
+    }
+
+    /** Libellés des langues avec drapeau emoji, pour les sélecteurs visuels. */
+    fun flagLabel(language: String, label: String): String =
+        "${LANGUAGE_FLAGS[language.lowercase().substringBefore('-')] ?: "🌐"} $label"
 
     val DEFAULT_STREMIO_ADDONS: List<String>
         get() = listOf(DEFAULT_STREAM_ADDON) +
@@ -259,6 +309,29 @@ object FrSettings {
     val useJikanCatalog: Boolean get() = bool(KEY_USE_JIKAN, true)
     val useAnimeCatalog: Boolean get() = useAniListCatalog || useJikanCatalog
     val popularCatalog: String get() = string(KEY_POPULAR, "mixed")
+
+    /** Serveurs DNS personnalisés (IP ou IP:port, un par ligne). Vide = DNS du système. */
+    val dnsHosts: List<String>
+        get() = string(KEY_DNS_HOSTS, "")
+            .lineSequence()
+            .map { it.trim().removePrefix("https://").removePrefix("http://").trim() }
+            .filter(String::isNotBlank)
+            .distinct()
+            .take(4)
+            .toList()
+    val useCustomDns: Boolean get() = dnsHosts.isNotEmpty()
+
+    /**
+     * Organisation des séries à plusieurs saisons :
+     *  - `classic` : une fiche puis une liste de saisons (comportement historique) ;
+     *  - `merged`  : toutes les saisons fusionnées dans une seule fiche (épisodes S1E1…S2E1…) ;
+     *  - `split`   : chaque saison devient une fiche distincte dès le catalogue.
+     */
+    val seriesLayout: String
+        get() = string(KEY_SERIES_LAYOUT, "classic")
+            .takeIf { it in setOf("classic", "merged", "split") } ?: "classic"
+
+    val verifyStreamContent: Boolean get() = bool(KEY_VERIFY_STREAM_CONTENT, true)
 
     val apiTokens: Map<String, String>
         get() = string(KEY_TOKENS, "").lineSequence()
