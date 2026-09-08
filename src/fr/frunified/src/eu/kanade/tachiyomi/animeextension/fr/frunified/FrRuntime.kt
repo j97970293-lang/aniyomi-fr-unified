@@ -125,7 +125,11 @@ object FrRuntime {
             response.use {
                 val status = it.code
                 val contentType = runCatching { it.header("Content-Type") }.getOrNull()
-                val bodyText = readLimited(it.body?.byteStream(), maxBytes.coerceAtLeast(0))
+                val bodyText = if (probe) {
+                    readLimited(it.body?.byteStream(), maxBytes.coerceAtLeast(0))
+                } else {
+                    runCatching { it.body?.string() }.getOrNull().orEmpty()
+                }
                 RawResult(status, bodyText, contentType)
             }
         }.getOrNull()

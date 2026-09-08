@@ -134,10 +134,17 @@ object TmdbCatalog {
         }.distinct()
     }
 
-    suspend fun searchBest(query: String, year: Int?): CatalogItem? {
+    suspend fun searchBest(query: String, year: Int?, knownTitles: List<String> = listOf(query)): CatalogItem? {
         val items = search(query, 1)
-        val best = items.maxByOrNull { TitleMatch.score(listOf(query), it.title, year, it.year) } ?: return null
-        return best.takeIf { TitleMatch.score(listOf(query), it.title, year, it.year) >= 0.55 }
+        val best = items.maxByOrNull { item ->
+            item.titles.maxOfOrNull { candidateTitle ->
+                TitleMatch.score(knownTitles, candidateTitle, year, item.year)
+            } ?: 0.0
+        } ?: return null
+        val bestScore = best.titles.maxOfOrNull { candidateTitle ->
+            TitleMatch.score(knownTitles, candidateTitle, year, best.year)
+        } ?: 0.0
+        return best.takeIf { bestScore >= 0.50 }
     }
 
     suspend fun findTmdbId(payload: PlayPayload): Int? {
@@ -148,9 +155,9 @@ object TmdbCatalog {
         for (year in years) {
             var best: Pair<Double, Int>? = null
             for (title in payload.titles.take(6)) {
-                val item = runCatching { searchBest(title, year) }.getOrNull() ?: continue
+                val item = runCatching { searchBest(title, year, payload.titles) }.getOrNull() ?: continue
                 val id = item.id.id.toIntOrNull() ?: continue
-                val score = TitleMatch.score(payload.titles, item.title, year, item.year)
+                val score = item.titles.maxOfOrNull { TitleMatch.score(payload.titles, it, year, item.year) } ?: 0.0
                 if (best == null || score > best!!.first) best = score to id
             }
             best?.let { return it.second }

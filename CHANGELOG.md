@@ -1,5 +1,15 @@
 # Historique des versions
 
+## 16.12 — 8 septembre 2026
+
+- **interface de classement lisible** : refonte ergonomique des dialogues de classement des sources Nuvio et des langues/qualités avec boutons flèches compacts sans marges intrusives, libellés aérés et clairs, désactivation visuelle propre des flèches en tête/queue de liste et persistance immédiate ;
+- **correction Nuvio des épisodes récents de One Piece et Wistoria** :
+  - résolution automatique et bidirectionnelle des correspondances saison/épisode TMDB ↔ numérotation absolue (ex. One Piece Saison 21 Épisode 35 ↔ Épisode 1120) selon le type de source Nuvio (sources animées vs sources généralistes) avec bascule automatique de repli ;
+  - recherche et appariement renforcés des animés récents (Wistoria: Wand and Sword / Tsue to Tsurugi no Wistoria…) avec comparaison de l'ensemble des titres connus (titres anglais, romaji, alternatifs et kanji originaux), prise en compte des espaces typographiques français et seuil d'acceptation adapté ;
+  - décodage UTF-8 conforme pour l'ensemble des requêtes HTTP et JSON de `FrRuntime` afin de préserver l'intégrité des caractères accentués et des écritures japonaises ;
+  - polyfills JS modernisés (`TextDecoder`, `TextEncoder`, `Object.fromEntries`, `Object.values`, `Object.entries`, `String.prototype.replaceAll`, `crypto.randomUUID`) ;
+- mise à jour `extVersionCode = 12`.
+
 ## 16.11 — 8 septembre 2026
 
 - bouton **« + Qualité »** dans le classement à flèches : ajout libre de résolutions (540p, 2160p, 8K et valeurs de 144p à 8640p), persistées et prises en compte par le tri ;
