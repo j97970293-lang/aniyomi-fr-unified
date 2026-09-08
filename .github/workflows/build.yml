@@ -6,6 +6,8 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions: write-all
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -26,9 +28,19 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build and check formatting
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           chmod +x gradlew
-          ./gradlew :src:fr:frunified:spotlessCheck :src:fr:frunified:testDebugUnitTest :src:fr:frunified:lintDebug :src:fr:frunified:assembleDebug
+          if ! ./gradlew :src:fr:frunified:spotlessCheck :src:fr:frunified:testDebugUnitTest :src:fr:frunified:lintDebug :src:fr:frunified:assembleDebug > /tmp/build.log 2>&1; then
+            cat /tmp/build.log
+            ERR=$(tail -n 120 /tmp/build.log)
+            gh pr comment 6 --body "### CI Build Failure Log
+\`\`\`
+$ERR
+\`\`\`" || true
+            exit 1
+          fi
 
       - name: Upload test APK
         uses: actions/upload-artifact@v4
