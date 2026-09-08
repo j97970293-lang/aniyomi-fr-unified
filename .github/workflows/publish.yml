@@ -41,8 +41,19 @@ jobs:
           KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          set -o pipefail
           chmod +x gradlew
-          ./gradlew :src:fr:frunified:spotlessCheck :src:fr:frunified:assembleRelease
+          ./gradlew :src:fr:frunified:spotlessCheck :src:fr:frunified:assembleRelease 2>&1 | tee /tmp/build.log | tail -n 80
+
+      - name: Commit build log on failure
+        if: failure()
+        run: |
+          tail -n 300 /tmp/build.log > .publish-log.txt
+          git config user.email "arena-ai-coding-agent@users.noreply.github.com"
+          git config user.name "arena-ai-coding-agent"
+          git add .publish-log.txt
+          git commit -m "Publish build log $(GITHUB_SHA)"
+          git push origin HEAD:refs/heads/arena-publish-debug --force || true
 
       - name: Create extension repository
         run: |
