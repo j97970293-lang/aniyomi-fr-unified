@@ -29,12 +29,40 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build and check formatting
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x gradlew
-          ./gradlew :src:fr:frunified:spotlessCheck || { echo "=== SPOTLESS VIOLATION ==="; ./gradlew :src:fr:frunified:spotlessApply; git diff; exit 1; }
-          ./gradlew :src:fr:frunified:testDebugUnitTest || { echo "=== TESTS FAILED ==="; exit 1; }
-          ./gradlew :src:fr:frunified:lintDebug || { echo "=== LINT FAILED ==="; exit 1; }
-          ./gradlew :src:fr:frunified:assembleDebug || { echo "=== ASSEMBLE FAILED ==="; exit 1; }
+          
+          run_step() {
+            local step_name="$1"
+            local cmd="$2"
+            echo "::group::Running $step_name"
+            if ! eval "$cmd" > /tmp/step.log 2>&1; then
+              echo "::error title=$step_name failed::$step_name failed"
+              echo "### ❌ $step_name failed" >> $GITHUB_STEP_SUMMARY
+              echo '```text' >> $GITHUB_STEP_SUMMARY
+              tail -n 100 /tmp/step.log >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              cat /tmp/step.log
+              if [ "$step_name" = "spotlessCheck" ]; then
+                ./gradlew :src:fr:frunified:spotlessApply || true
+                echo '### Diff after spotlessApply:' >> $GITHUB_STEP_SUMMARY
+                echo '```diff' >> $GITHUB_STEP_SUMMARY
+                git diff >> $GITHUB_STEP_SUMMARY
+                echo '```' >> $GITHUB_STEP_SUMMARY
+              fi
+              echo "::endgroup::"
+              exit 1
+            fi
+            echo "::endgroup::"
+          }
+
+          run_step "spotlessCheck" "./gradlew :src:fr:frunified:spotlessCheck"
+          run_step "testDebugUnitTest" "./gradlew :src:fr:frunified:testDebugUnitTest"
+          run_step "lintDebug" "./gradlew :src:fr:frunified:lintDebug"
+          run_step "assembleDebug" "./gradlew :src:fr:frunified:assembleDebug"
+
 
       - name: Upload test APK
         uses: actions/upload-artifact@v4
