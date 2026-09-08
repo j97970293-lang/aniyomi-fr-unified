@@ -62,10 +62,7 @@ object FrDns : Dns {
             // on retombe sur la résolution système.
             runCatching { Dns.SYSTEM.lookup(hostname) }.getOrDefault(emptyList())
         }
-        cache[key] = CacheEntry(
-            now + if (result.isEmpty()) CACHE_NEGATIVE_MS else CACHE_POSITIVE_MS,
-            result,
-        )
+        cache[key] = CacheEntry(now + if (result.isEmpty()) CACHE_NEGATIVE_MS else CACHE_POSITIVE_MS, result)
         return result
     }
 
@@ -99,7 +96,9 @@ object FrDns : Dns {
     internal fun dohEndpoint(raw: String): String? {
         val value = raw.trim()
         if (value.isEmpty()) return null
-        if (value.startsWith("https://", true) || value.startsWith("http://", true)) {
+        if (value.startsWith("https://", ignoreCase = true) ||
+            value.startsWith("http://", ignoreCase = true)
+        ) {
             return value.trimEnd('/')
         }
         val host = parseHost(value) ?: return null
@@ -130,7 +129,11 @@ object FrDns : Dns {
     }
 
     private fun parseServer(raw: String): Server? {
-        if (raw.startsWith("http://", true) || raw.startsWith("https://", true)) return null
+        if (raw.startsWith("http://", ignoreCase = true) ||
+            raw.startsWith("https://", ignoreCase = true)
+        ) {
+            return null
+        }
         return runCatching {
             val value = raw.trim()
             if (value.isEmpty()) return@runCatching null

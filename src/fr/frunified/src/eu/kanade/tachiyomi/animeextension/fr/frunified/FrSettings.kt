@@ -387,10 +387,12 @@ object FrSettings {
             .lineSequence()
             .map { line ->
                 val value = line.trim()
-                when {
-                    value.startsWith("https://", true) || value.startsWith("http://", true) ->
-                        value.trimEnd('/')
-                    else -> value
+                if (value.startsWith("https://", ignoreCase = true) ||
+                    value.startsWith("http://", ignoreCase = true)
+                ) {
+                    value.trimEnd('/')
+                } else {
+                    value
                 }
             }
             .filter(String::isNotBlank)

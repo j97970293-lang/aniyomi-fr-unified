@@ -80,6 +80,9 @@ object NuvioClient {
     /** Sémaphore des seuls TESTS (2 max) : ne bloque jamais la lecture réelle. */
     private val testSemaphore = Semaphore(2)
 
+    /** Borne les sondes de revérification au clic (indépendant de la concurrence Nuvio). */
+    private val probeLimiter = Semaphore(6)
+
     /** Re-crée le sémaphore uniquement si le réglage a changé, pas lorsqu'un permit est occupé. */
     @Synchronized
     private fun syncSemaphore(): Semaphore {
@@ -612,16 +615,18 @@ object NuvioClient {
         val foundFrenchAudio = AtomicBoolean(false)
         val stopNew = AtomicBoolean(false)
 
-        fun enough(): Boolean = successesWanted != Int.MAX_VALUE &&
-            successes.get() >= successesWanted &&
-            (!sawExplicitAudio.get() || foundFrenchAudio.get())
+        fun enough(): Boolean {
+            return successesWanted != Int.MAX_VALUE &&
+                successes.get() >= successesWanted &&
+                (!sawExplicitAudio.get() || foundFrenchAudio.get())
+        }
 
         val results = scrapers.map { scraper ->
             async {
                 if (stopNew.get()) return@async false
                 limiter.withPermit {
                     if (stopNew.get()) return@withPermit false
-                    runCatching {
+                    val ok = runCatching {
                         runScraper(scraper, tmdbId, mediaType, season, episode, payload) { video ->
                             StreamLabel.languageIn(video.videoTitle)?.let { tag ->
                                 sawExplicitAudio.set(true)
@@ -631,12 +636,12 @@ object NuvioClient {
                             }
                             callback(video)
                         }
-                    }.getOrDefault(false).also { ok ->
-                        if (ok) {
-                            successes.incrementAndGet()
-                            if (enough()) stopNew.set(true)
-                        }
+                    }.getOrDefault(false)
+                    if (ok) {
+                        successes.incrementAndGet()
+                        if (enough()) stopNew.set(true)
                     }
+                    ok
                 }
             }
         }.awaitAll()
@@ -1267,8 +1272,6 @@ object NuvioClient {
             }.awaitAll().filterNotNull()
         }
     }
-
-    private val probeLimiter = Semaphore(6)
 
     private fun deniedStreamStatus(video: Video): Int? {
         val initialUrl = video.videoUrl.takeIf { it.startsWith("http") } ?: return null

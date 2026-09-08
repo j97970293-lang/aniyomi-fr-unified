@@ -1511,7 +1511,8 @@ class FrUnified : Source() {
             appendLine()
             appendLine("🧩 4 · STREMIO")
             appendLine(
-                "Les addons fournissent catalogues et serveurs. Le chargement se fait au clic ; un addon lent ne bloque plus les autres.",
+                "Les addons fournissent catalogues et serveurs. Le chargement se fait au clic ; " +
+                    "un addon lent ne bloque plus les autres.",
             )
             appendLine()
             appendLine("🌐 5 · RÉSEAU")
@@ -2225,9 +2226,7 @@ class FrUnified : Source() {
     ) {
         addPreference(
             EditTextPreference(context).apply {
-                this.key = key
-                this.title = title
-                this.summary = summary
+                this      this.summary = summary
                 dialogTitle = title
                 setDefaultValue(default)
                 setOnBindEditTextListener { input ->
@@ -2319,6 +2318,10 @@ class FrUnified : Source() {
             SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
                 timeZone = TimeZone.getTimeZone("UTC")
             }.parse(value)?.time ?: 0L
+        }.getOrDefault(0L)
+    }
+}
+e(value)?.time ?: 0L
         }.getOrDefault(0L)
     }
 }
