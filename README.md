@@ -1,6 +1,6 @@
 # FR Unifié pour Aniyomi
 
-**FR Unifié 16.9** est une extension Aniyomi autonome qui réunit catalogues, fiches, épisodes et sources de lecture dans une seule interface.
+**FR Unifié 16.10** est une extension Aniyomi autonome qui réunit catalogues, fiches, épisodes et sources de lecture dans une seule interface.
 
 ## Fonctions principales
 
@@ -10,7 +10,7 @@
 - recherche, fiches, saisons et épisodes Stremio, y compris `meta.streams` et les flux TV directs ;
 - serveurs Stremio visibles et chargés à la demande même lorsque Nuvio est désactivé, avec conversion des identifiants IMDb/TMDB et des types `series`/`tv` ;
 - choix de l’ordre des moteurs : **Nuvio puis Stremio** ou **Stremio puis Nuvio** ;
-- sources Nuvio activables individuellement, issues de dépôts français et internationaux, et interrogées simultanément par lots bornés ;
+- sources Nuvio activables individuellement, issues de dépôts français et internationaux, et interrogées **en parallèle** (2 à 6 à la fois) ;
 - **classement des sources à l’aide de flèches** (haut, bas, monter, descendre) au lieu de la saisie manuelle, et drapeaux de langue affichés dans tous les sélecteurs ;
 - **organisation des saisons réglable** : classique (fiche → saisons → épisodes), fusionnée (une seule fiche avec toutes les saisons) ou séparée (une fiche « Titre — Saison N » dès le catalogue) ;
 - langues de catalogue et de providers configurables ;
@@ -19,8 +19,8 @@
 - **recherche rapide** facultative (TMDB + AniList, 6 s par appel) et repli TMDB sans année ;
 - **mise à jour automatique quotidienne des sources Nuvio**, avec action manuelle et bilan chiffré ;
 - transmission des en-têtes HTTP nécessaires au lecteur ;
-- contrôle léger des flux avant lecture et rejet des refus HTTP explicites, notamment les 403 ; **détection des pages HTML/popups** téléchargées à la place de la vidéo (FrenchStream et autres) ;
-- **DNS personnalisé de l’extension** (UDP, un serveur par ligne) lorsque le DNS de l’appareil ne résout pas certains sites ;
+- contrôle léger des flux à la découverte, **revérification au clic avant lecture**, et rejet des refus HTTP (403…) ainsi que des **pages HTML/popups** ;
+- **DNS personnalisé avec DoH** (HTTPS, puis UDP 53) lorsque le DNS de l’appareil ne résout pas certains sites ;
 - sous-titres externes Stremio/OpenSubtitles ;
 - réglages avancés conservés : ordre des providers, ordre des critères en texte, concurrence, clés API, User-Agent, Referer et cookies.
 
@@ -83,7 +83,7 @@ Une fois l’import confirmé, ouvrez **Nuvio → choisir les sources** : les **
 
 Les bundles internationaux utilisent parfois des fonctions Node ou des sites qui changent sans préavis. Le moteur apporte des polyfills Rhino, abaisse les boucles `for…of` et corrige plusieurs incompatibilités de portée, mais la disponibilité d’un provider tiers n’est jamais garantie.
 
-## Flux, langues et qualités (16.9)
+## Flux, langues et qualités (16.10)
 
 Chaque flux est présenté de la même façon, quel que soit le moteur :
 
@@ -100,7 +100,7 @@ Le réglage **Lecture → Classer langues et qualités avec les flèches** rempl
 VF, VFF, VFQ, MULTI, VOSTFR, VO, 1080p, 4K, 1440p, 720p, 480p, 360p
 ```
 
-Le premier critère satisfait par un flux décide de sa place, le suivant départage : une VF 720p passe avant une VOSTFR 1080p, une VF 1080p avant une VF 720p. Pour privilégier la qualité, montez `1080p` ou `4K` au-dessus des langues. Le premier flux satisfaisant au moins un critère est marqué « préféré » et lancé automatiquement par Aniyomi. Les motifs personnalisés des versions précédentes sont convertis à la première ouverture.
+Le premier critère satisfait par un flux décide de sa place, le suivant départage : une VF 720p passe avant une VOSTFR 1080p, une VF 1080p avant une VF 720p. Pour privilégier la qualité, montez `1080p` ou `4K` au-dessus des langues. Seul le flux classé n° 1 est marqué « préféré » et lancé automatiquement par Aniyomi. Les motifs personnalisés des versions précédentes sont convertis à la première ouverture.
 
 ## Installation
 
@@ -119,7 +119,7 @@ Puis installez **FR Unifié** depuis **Parcourir → Extensions Anime**.
 Le fichier de version est nommé :
 
 ```text
-FR-Unifie-Aniyomi-v16.9.apk
+FR-Unifie-Aniyomi-v16.10.apk
 ```
 
 Android peut demander l’autorisation d’installer depuis la source utilisée. Lors du premier lancement, Aniyomi peut aussi demander de faire confiance au certificat de l’extension.
@@ -133,13 +133,13 @@ Compatibilité : **API d’extension Aniyomi 16**, **Android 8.0 / API 26 minimu
 3. Si vous voulez uniquement Stremio, désactivez **Catalogues principaux** et gardez **Catalogue Stremio** actif.
 4. Choisissez la priorité **Nuvio/Stremio**, puis **classez langues et qualités avec les flèches** (VF d’abord par défaut). Activez la **recherche rapide** si les recherches vous paraissent lentes.
 5. Dans **Nuvio**, ouvrez le sélecteur pour voir tous les plugins ajoutés (avec leur drapeau), puis **classez-les avec les flèches** et choisissez les langues réellement exécutées.
-6. Réglez au besoin le nombre de scrapeurs simultanés (3 recommandé) ; l’ordre enregistré des sources reste modifiable en texte pour les cas avancés. Laissez la **mise à jour automatique des sources** active, ou lancez **Mettre à jour les sources maintenant** après l’ajout d’un dépôt.
+6. Réglez au besoin le nombre de scrapeurs simultanés (3 recommandé, jusqu’à 6 en parallèle) ; l’ordre enregistré des sources reste modifiable en texte pour les cas avancés. Laissez la **mise à jour automatique des sources** active, ou lancez **Mettre à jour les sources maintenant** après l’ajout d’un dépôt.
 7. Choisissez l’**organisation des saisons** souhaitée (classique par défaut) : fusionnée pour ouvrir directement tous les épisodes, séparée pour découper les séries dès le catalogue.
-8. Si certains sites ne se résolvent pas sur votre téléphone, ajoutez un **DNS personnalisé** (ex. `1.1.1.1`) dans la section Réseau, puis testez-le.
+8. Si certains sites ne se résolvent pas sur votre téléphone, ajoutez un **DNS personnalisé** (ex. `1.1.1.1`, utilisé en DoH puis UDP) dans la section Réseau, puis testez-le.
 9. Dans **Stremio**, activez les addons désirés.
 10. Utilisez les actions d’ajout propres à Nuvio ou Stremio pour coller un nouveau manifest ; il n’existe pas de champ d’import générique redondant.
 
-Le diagnostic Nuvio teste le chemin réel Kotlin → Rhino → réseau. Les providers sont lancés simultanément par lots bornés, et une réussite VOSTFR ne stoppe pas la recherche tant qu’une VF peut encore être trouvée. Les hosters des deux moteurs restent disponibles dans l’ordre choisi. Un addon Stremio lent est abandonné après 15 secondes sans bloquer la liste.
+Le diagnostic Nuvio teste le chemin réel Kotlin → Rhino → réseau. Les providers partent en parallèle (sans attendre la fin d’un lot), et une réussite VOSTFR ne stoppe pas la recherche tant qu’une VF peut encore être trouvée. Au clic, les liens Nuvio sont revérifiés. Les hosters des deux moteurs restent disponibles dans l’ordre choisi. Un addon Stremio lent est abandonné après 15 secondes sans bloquer la liste.
 
 ## Compilation locale
 

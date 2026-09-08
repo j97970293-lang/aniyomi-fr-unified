@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 16.10 — 8 septembre 2026
+
+- **moteur Nuvio parallèle** : tous les sites actifs sont lancés ensemble (bornés par le réglage de concurrence, désormais jusqu'à 6) ; les modes rapide et équilibré n'attendent plus la fin d'un lot — dès qu'assez de VF sont trouvées, les sites encore en file sont sautés, ceux déjà en vol terminent ;
+- **liens revérifiés avant lecture** : au clic sur un serveur Nuvio, chaque URL HTTP est re-sondée (403, page HTML/popup, HLS) afin d'écarter les liens expirés ou devenus une publicité depuis le listage ;
+- **DNS avec DoH** : le DNS personnalisé interroge d'abord le résolveur en HTTPS (RFC 8484, `1.1.1.1` / `8.8.8.8` / `9.9.9.9` ou URL `https://…/dns-query`), puis UDP 53, puis le DNS du système ; lecture de `ANCOUNT` corrigée dans les réponses filaires ;
+- **classement à flèches fiable** : l'ordre des langues et qualités est enregistré immédiatement (`commit`) ; « Ordre conseillé » met à jour la liste ouverte au lieu de la laisser périmée ; un seul flux est marqué préféré (celui classé n° 1) pour la lecture automatique Aniyomi.
+
 ## 16.9 — 8 septembre 2026
 
 - **titres de flux lisibles et homogènes** pour Nuvio comme pour Stremio : `(VF) 1080p · flemmix · Nuvio · Uqload` — langue, qualité, source, moteur puis détail utile ; le détail ne répète plus le titre de l’œuvre ni les étiquettes déjà affichées ;

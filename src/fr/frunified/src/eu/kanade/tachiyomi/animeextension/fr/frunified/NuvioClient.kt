@@ -25,6 +25,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import com.frunified.rhino.Context as RhinoContext
 
@@ -78,6 +79,9 @@ object NuvioClient {
 
     /** Sémaphore des seuls TESTS (2 max) : ne bloque jamais la lecture réelle. */
     private val testSemaphore = Semaphore(2)
+
+    /** Borne les sondes de revérification au clic (indépendant de la concurrence Nuvio). */
+    private val probeLimiter = Semaphore(6)
 
     /** Re-crée le sémaphore uniquement si le réglage a changé, pas lorsqu'un permit est occupé. */
     @Synchronized
@@ -570,47 +574,32 @@ object NuvioClient {
         val mediaType = if (payload.isSeries) "tv" else "movie"
         val season = if (payload.isSeries) (payload.season ?: 1) else 0
         val episode = if (payload.isSeries) (payload.episode ?: 1) else 0
-
-        return when (FrSettings.nuvioSearchMode) {
-            "complete" -> coroutineScope {
-                all.map { scraper ->
-                    async {
-                        runCatching {
-                            limiter.withPermit {
-                                runScraper(scraper, tmdbId, mediaType, season, episode, payload, callback)
-                            }
-                        }.getOrDefault(false)
-                    }
-                }.awaitAll().any { it }
-            }
-
-            "balanced" -> runConcurrentBatches(
-                all,
-                2,
-                limiter,
-                tmdbId,
-                mediaType,
-                season,
-                episode,
-                payload,
-                callback,
-            )
-
-            else -> runConcurrentBatches(
-                all,
-                1,
-                limiter,
-                tmdbId,
-                mediaType,
-                season,
-                episode,
-                payload,
-                callback,
-            )
+        val successesWanted = when (FrSettings.nuvioSearchMode) {
+            "complete" -> Int.MAX_VALUE
+            "balanced" -> 2
+            else -> 1
         }
+        return runParallelScrapers(
+            all,
+            successesWanted,
+            limiter,
+            tmdbId,
+            mediaType,
+            season,
+            episode,
+            payload,
+            callback,
+        )
     }
 
-    private suspend fun runConcurrentBatches(
+    /**
+     * Tous les providers sont lancés en parallèle (bornés par le sémaphore de
+     * concurrence). Les modes rapide et équilibré n'attendent plus la fin d'un
+     * lot : dès qu'assez de sources ont réussi (et qu'une VF a été vue s'il y
+     * avait une langue explicite), les providers encore en file sont sautés ;
+     * ceux déjà en vol terminent pour ne pas perdre une VF.
+     */
+    private suspend fun runParallelScrapers(
         scrapers: List<NuvioScraper>,
         successesWanted: Int,
         limiter: Semaphore,
@@ -621,40 +610,42 @@ object NuvioClient {
         payload: PlayPayload,
         callback: (Video) -> Unit,
     ): Boolean = coroutineScope {
-        var successes = 0
-        val sawExplicitAudio = java.util.concurrent.atomic.AtomicBoolean(false)
-        val foundFrenchAudio = java.util.concurrent.atomic.AtomicBoolean(false)
-        val batchSize = FrSettings.nuvioConcurrency.coerceIn(2, 4)
+        val successes = AtomicInteger(0)
+        val sawExplicitAudio = AtomicBoolean(false)
+        val foundFrenchAudio = AtomicBoolean(false)
+        val stopNew = AtomicBoolean(false)
 
-        // Rapide et équilibré sont eux aussi simultanés. L'arrêt anticipé se fait
-        // entre deux lots bornés afin de ne jamais annuler une VF encore en vol.
-        for (batch in scrapers.chunked(batchSize)) {
-            val results = batch.map { scraper ->
-                async {
-                    runCatching {
-                        limiter.withPermit {
-                            runScraper(scraper, tmdbId, mediaType, season, episode, payload) { video ->
-                                StreamLabel.languageIn(video.videoTitle)?.let { tag ->
-                                    sawExplicitAudio.set(true)
-                                    if (tag in setOf("VF", "VFF", "VFQ", "MULTI")) {
-                                        foundFrenchAudio.set(true)
-                                    }
+        fun enough(): Boolean {
+            return successesWanted != Int.MAX_VALUE &&
+                successes.get() >= successesWanted &&
+                (!sawExplicitAudio.get() || foundFrenchAudio.get())
+        }
+
+        val results = scrapers.map { scraper ->
+            async {
+                if (stopNew.get()) return@async false
+                limiter.withPermit {
+                    if (stopNew.get()) return@withPermit false
+                    val ok = runCatching {
+                        runScraper(scraper, tmdbId, mediaType, season, episode, payload) { video ->
+                            StreamLabel.languageIn(video.videoTitle)?.let { tag ->
+                                sawExplicitAudio.set(true)
+                                if (tag in setOf("VF", "VFF", "VFQ", "MULTI")) {
+                                    foundFrenchAudio.set(true)
                                 }
-                                callback(video)
                             }
+                            callback(video)
                         }
                     }.getOrDefault(false)
+                    if (ok) {
+                        successes.incrementAndGet()
+                        if (enough()) stopNew.set(true)
+                    }
+                    ok
                 }
-            }.awaitAll()
-            successes += results.count { it }
-            if (
-                successes >= successesWanted &&
-                (!sawExplicitAudio.get() || foundFrenchAudio.get())
-            ) {
-                return@coroutineScope true
             }
-        }
-        successes > 0
+        }.awaitAll()
+        results.any { it }
     }
 
     private fun orderForPayload(scrapers: List<NuvioScraper>, payload: PlayPayload): List<NuvioScraper> {
@@ -1263,6 +1254,24 @@ object NuvioClient {
      * sont éliminés.
      */
     internal fun acceptsStream(video: Video): Boolean = deniedStreamStatus(video) == null
+
+    /**
+     * Revérifie chaque lien HTTP juste avant lecture (les URL signées et les
+     * popups HTML peuvent changer entre le listage et le clic). Les magnets
+     * et les sondes en panne (status 0) sont conservés.
+     */
+    suspend fun reverify(videos: List<Video>): List<Video> {
+        if (videos.isEmpty()) return videos
+        return coroutineScope {
+            videos.map { video ->
+                async(Dispatchers.IO) {
+                    probeLimiter.withPermit {
+                        if (acceptsStream(video)) video else null
+                    }
+                }
+            }.awaitAll().filterNotNull()
+        }
+    }
 
     private fun deniedStreamStatus(video: Video): Int? {
         val initialUrl = video.videoUrl.takeIf { it.startsWith("http") } ?: return null

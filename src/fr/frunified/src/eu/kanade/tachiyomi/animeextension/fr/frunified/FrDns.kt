@@ -3,36 +3,55 @@ package eu.kanade.tachiyomi.animeextension.fr.frunified
 import okhttp3.Dns
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.URL
+import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ThreadLocalRandom
 
 /**
- * DNS UDP personnalisé, branché sur le client HTTP de l'extension.
+ * DNS personnalisé, branché sur le client HTTP de l'extension.
  *
- * Le « DNS privé » d'Android ne fonctionne pas sur certains téléphones/opérateurs ;
- * cette résolution n'utilise que le réseau Java classique (UDP port 53), sans passer
- * par les réglages DNS de l'appareil. Elle s'applique à toutes les requêtes HTTP de
- * l'extension : catalogues, manifests, scripts des sources, sondes et sous-titres.
+ * Ordre d'essai pour chaque serveur configuré :
+ * 1. **DoH** (DNS over HTTPS, RFC 8484) — contourne le port 53 souvent filtré
+ *    ou hijacké par l'opérateur ;
+ * 2. **UDP 53** — repli classique ;
+ * 3. **DNS du système** — jamais de coupure si tout le reste échoue.
  *
- * Les requêtes finales de lecture/téléchargement étant effectuées par l'application
- * Aniyomi elle-même, ce DNS ne peut pas couvrir ces dernières (voir le guide des réglages).
+ * Les requêtes finales de lecture/téléchargement étant effectuées par Aniyomi
+ * elle-même, ce DNS ne peut pas couvrir ces dernières (voir le guide).
+ *
+ * DoH s'adresse de préférence à l'IP du résolveur (`https://1.1.1.1/dns-query`)
+ * afin de ne pas dépendre d'une autre résolution de nom (récursion).
  */
 object FrDns : Dns {
 
-    private const val TIMEOUT_MS = 2_500
+    private const val UDP_TIMEOUT_MS = 2_500
+    private const val DOH_TIMEOUT_MS = 4_000
     private const val CACHE_POSITIVE_MS = 10 * 60 * 1000L
     private const val CACHE_NEGATIVE_MS = 20 * 1000L
-    private const val MAX_SERVERS = 3
+    private const val MAX_SERVERS = 4
 
     private data class CacheEntry(val expiresAt: Long, val addresses: List<InetAddress>)
     private val cache = ConcurrentHashMap<String, CacheEntry>()
 
+    @Volatile
+    private var lastServers: List<String> = emptyList()
+
     private data class Server(val address: InetAddress, val port: Int)
+
+    fun clearCache() {
+        cache.clear()
+    }
 
     override fun lookup(hostname: String): List<InetAddress> {
         val servers = FrSettings.dnsHosts
+        if (servers != lastServers) {
+            cache.clear()
+            lastServers = servers
+        }
         if (servers.isEmpty()) return Dns.SYSTEM.lookup(hostname)
         val key = hostname.lowercase()
         val now = System.currentTimeMillis()
@@ -49,55 +68,135 @@ object FrDns : Dns {
 
     private fun resolve(hostname: String, rawServers: List<String>): List<InetAddress> {
         if (!isAsciiHostname(hostname)) return emptyList()
-        val servers = rawServers.take(MAX_SERVERS).mapNotNull(::parseServer)
-        if (servers.isEmpty()) return emptyList()
         val addresses = linkedSetOf<InetAddress>()
-        // Interroge les serveurs dans l'ordre jusqu'à obtenir des adresses IPv4.
-        for (server in servers) {
-            val found = udpQuery(server, hostname, TYPE_A)
-            addresses += found
+        for (raw in rawServers.take(MAX_SERVERS)) {
+            addresses += query(raw, hostname, TYPE_A)
+            if (addresses.isEmpty()) addresses += query(raw, hostname, TYPE_AAAA)
             if (addresses.isNotEmpty()) break
         }
-        if (addresses.isEmpty()) {
-            for (server in servers) {
-                val found = udpQuery(server, hostname, TYPE_AAAA)
-                addresses += found
-                if (addresses.isNotEmpty()) break
-            }
-        }
         return addresses.toList()
+    }
+
+    /** DoH d'abord, puis UDP 53. */
+    private fun query(raw: String, hostname: String, type: Int): List<InetAddress> {
+        val viaDoh = dohQuery(raw, hostname, type)
+        if (viaDoh.isNotEmpty()) return viaDoh
+        val server = parseServer(raw) ?: return emptyList()
+        return udpQuery(server, hostname, type)
     }
 
     private fun isAsciiHostname(hostname: String): Boolean =
         hostname.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '-' || it == '.' }
 
-    private fun parseServer(raw: String): Server? = runCatching {
+    /**
+     * URL DoH RFC 8484 correspondant à une ligne de réglage.
+     * Les résolveurs publics connus sont forcés sur leur IP afin d'éviter
+     * une résolution préalable (et une récursion via [FrDns] / le DNS opérateur).
+     */
+    internal fun dohEndpoint(raw: String): String? {
         val value = raw.trim()
-        if (value.isEmpty()) return@runCatching null
-        val address: InetAddress
-        val port: Int
+        if (value.isEmpty()) return null
+        if (value.startsWith("https://", ignoreCase = true) ||
+            value.startsWith("http://", ignoreCase = true)
+        ) {
+            return value.trimEnd('/')
+        }
+        val host = parseHost(value) ?: return null
+        return when (host) {
+            "1.1.1.1", "1.0.0.1", "cloudflare-dns.com" -> "https://1.1.1.1/dns-query"
+            "8.8.8.8", "8.8.4.4", "dns.google" -> "https://8.8.8.8/dns-query"
+            "9.9.9.9", "149.112.112.112", "dns.quad9.net" -> "https://9.9.9.9/dns-query"
+            else -> "https://$host/dns-query"
+        }
+    }
+
+    private fun parseHost(raw: String): String? {
+        val value = raw.trim().removePrefix("[").let { text ->
+            if (text.endsWith(']') && text.count { it == ':' } > 1) {
+                text.dropLast(1)
+            } else {
+                text
+            }
+        }
+        if (value.isEmpty()) return null
         val lastColon = value.lastIndexOf(':')
         val looksLikeV6 = value.count { it == ':' } > 1
-        if (!looksLikeV6 && lastColon > 0 && value.substring(lastColon + 1).all(Char::isDigit)) {
-            address = InetAddress.getByName(value.substring(0, lastColon))
-            port = value.substring(lastColon + 1).toInt().takeIf { it in 1..65535 } ?: 53
+        return if (!looksLikeV6 && lastColon > 0 && value.substring(lastColon + 1).all(Char::isDigit)) {
+            value.substring(0, lastColon).ifBlank { null }
         } else {
-            address = InetAddress.getByName(value)
-            port = 53
+            value
         }
-        Server(address, port)
-    }.getOrNull()
+    }
+
+    private fun parseServer(raw: String): Server? {
+        if (raw.startsWith("http://", ignoreCase = true) ||
+            raw.startsWith("https://", ignoreCase = true)
+        ) {
+            return null
+        }
+        return runCatching {
+            val value = raw.trim()
+            if (value.isEmpty()) return@runCatching null
+            val address: InetAddress
+            val port: Int
+            val lastColon = value.lastIndexOf(':')
+            val looksLikeV6 = value.count { it == ':' } > 1
+            if (!looksLikeV6 && lastColon > 0 && value.substring(lastColon + 1).all(Char::isDigit)) {
+                address = InetAddress.getByName(value.substring(0, lastColon))
+                port = value.substring(lastColon + 1).toInt().takeIf { it in 1..65535 } ?: 53
+            } else {
+                address = InetAddress.getByName(value)
+                port = 53
+            }
+            Server(address, port)
+        }.getOrNull()
+    }
 
     private const val TYPE_A = 1
     private const val TYPE_AAAA = 28
     private const val TYPE_CNAME = 5
+
+    private fun dohQuery(raw: String, hostname: String, type: Int): List<InetAddress> = runCatching {
+        val endpoint = dohEndpoint(raw) ?: return emptyList()
+        val id = ThreadLocalRandom.current().nextInt(0x10000)
+        val query = buildQuery(id, hostname, type)
+        val encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(query)
+        val url = if ('?' in endpoint) "$endpoint&dns=$encoded" else "$endpoint?dns=$encoded"
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = DOH_TIMEOUT_MS
+            readTimeout = DOH_TIMEOUT_MS
+            instanceFollowRedirects = false
+            useCaches = false
+            setRequestProperty("Accept", "application/dns-message")
+            setRequestProperty("User-Agent", "FR-Unified-DoH")
+        }
+        try {
+            if (conn.responseCode !in 200..299) return emptyList()
+            val bytes = conn.inputStream.use { stream ->
+                val buffer = java.io.ByteArrayOutputStream(512)
+                val chunk = ByteArray(512)
+                var total = 0
+                while (total < 4096) {
+                    val read = stream.read(chunk, 0, minOf(chunk.size, 4096 - total))
+                    if (read < 0) break
+                    buffer.write(chunk, 0, read)
+                    total += read
+                }
+                buffer.toByteArray()
+            }
+            parseResponse(bytes, bytes.size, id, type)
+        } finally {
+            runCatching { conn.disconnect() }
+        }
+    }.getOrDefault(emptyList())
 
     private fun udpQuery(server: Server, hostname: String, type: Int): List<InetAddress> = runCatching {
         val socket = DatagramSocket(null)
         try {
             val id = ThreadLocalRandom.current().nextInt(0x10000)
             val query = buildQuery(id, hostname, type)
-            socket.soTimeout = TIMEOUT_MS
+            socket.soTimeout = UDP_TIMEOUT_MS
             socket.connect(InetSocketAddress(server.address, server.port))
             socket.send(DatagramPacket(query, query.size))
             val buffer = ByteArray(4096)
@@ -109,7 +208,7 @@ object FrDns : Dns {
         }
     }.getOrDefault(emptyList())
 
-    private fun buildQuery(id: Int, hostname: String, type: Int): ByteArray {
+    internal fun buildQuery(id: Int, hostname: String, type: Int): ByteArray {
         val out = java.io.ByteArrayOutputStream(64 + hostname.length)
         fun writeShort(value: Int) {
             out.write((value ushr 8) and 0xFF)
@@ -134,7 +233,16 @@ object FrDns : Dns {
         return out.toByteArray()
     }
 
-    private fun parseResponse(buffer: ByteArray, length: Int, expectedId: Int, wantedType: Int): List<InetAddress> {
+    /**
+     * Analyse une réponse DNS filaire. ANCOUNT est lu dans l'en-tête (octets 6-7),
+     * pas après la question — l'ancienne lecture décalait toutes les réponses.
+     */
+    internal fun parseResponse(
+        buffer: ByteArray,
+        length: Int,
+        expectedId: Int,
+        wantedType: Int,
+    ): List<InetAddress> {
         if (length < 12) return emptyList()
         val id = ((buffer[0].toInt() and 0xFF) shl 8) or (buffer[1].toInt() and 0xFF)
         if (id != expectedId) return emptyList()
@@ -142,14 +250,14 @@ object FrDns : Dns {
         if (flags and 0x8000 == 0) return emptyList() // réponse ? (QR)
         val rcode = flags and 0x000F
         if (rcode != 0) return emptyList()
+        val questionCount = ((buffer[4].toInt() and 0xFF) shl 8) or (buffer[5].toInt() and 0xFF)
+        val answerCount = ((buffer[6].toInt() and 0xFF) shl 8) or (buffer[7].toInt() and 0xFF)
         var cursor = 12
-        // Question (un seul) : nom compressé puis QTYPE/QCLASS.
-        cursor = skipName(buffer, cursor, length) ?: return emptyList()
-        if (cursor + 4 > length) return emptyList()
-        cursor += 4
-        if (cursor + 2 > length) return emptyList()
-        val answerCount = ((buffer[cursor].toInt() and 0xFF) shl 8) or (buffer[cursor + 1].toInt() and 0xFF)
-        cursor += 2
+        repeat(questionCount.coerceIn(0, 16)) {
+            cursor = skipName(buffer, cursor, length) ?: return emptyList()
+            if (cursor + 4 > length) return emptyList()
+            cursor += 4
+        }
         val addresses = linkedSetOf<InetAddress>()
         var answers = 0
         while (cursor < length && answers < answerCount && answers < 32) {

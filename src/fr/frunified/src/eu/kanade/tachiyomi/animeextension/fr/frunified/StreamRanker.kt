@@ -74,4 +74,19 @@ object StreamRanker {
             .thenComparator { a, b -> compareRanks(ranks(a, order), ranks(b, order)) }
             .thenBy { it.hosterName.lowercase() }
     }
+
+    /**
+     * Trie les flux selon [videoComparator] puis ne marque **préféré** que le premier
+     * qui satisfait un critère : Aniyomi lance alors exactement le flux classé n° 1,
+     * et non un flux « préféré » pris au hasard parmi plusieurs.
+     */
+    fun sorted(videos: List<Video>): List<Video> {
+        if (videos.isEmpty()) return videos
+        val ordered = videos.sortedWith(videoComparator())
+        val winnerIndex = ordered.indexOfFirst { isPreferred(it.videoTitle, it.resolution) }
+        return ordered.mapIndexed { index, video ->
+            val preferred = index == winnerIndex
+            if (video.preferred == preferred) video else video.copy(preferred = preferred)
+        }
+    }
 }

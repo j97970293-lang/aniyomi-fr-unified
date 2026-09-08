@@ -1159,7 +1159,7 @@ class FrUnified : Source() {
                     )
                 }
             }
-            .sortedWith(videoComparator())
+            .let(StreamRanker::sorted)
 
         // Un serveur par source, nommé « Nuvio · flemmix : VF, VOSTFR » (langues réellement trouvées).
         return prepared.groupBy { video ->
@@ -1173,15 +1173,20 @@ class FrUnified : Source() {
         }.sortedWith(hosterComparator())
     }
 
-    override suspend fun getVideoList(hoster: Hoster): List<Video> = if (StremioClient.isLazyHoster(hoster)) {
-        runCatching { StremioClient.streams(hoster) }.getOrDefault(emptyList()).sortedWith(videoComparator())
-    } else {
-        hoster.videoList.orEmpty().sortedWith(videoComparator())
+    override suspend fun getVideoList(hoster: Hoster): List<Video> {
+        val videos = if (StremioClient.isLazyHoster(hoster)) {
+            // Stremio sonde déjà chaque flux au chargement du serveur.
+            runCatching { StremioClient.streams(hoster) }.getOrDefault(emptyList())
+        } else {
+            // Nuvio : les URL signées et les popups peuvent avoir changé depuis le listage.
+            NuvioClient.reverify(hoster.videoList.orEmpty())
+        }
+        return StreamRanker.sorted(videos)
     }
 
     override fun List<Hoster>.sortHosters(): List<Hoster> = sortedWith(hosterComparator())
 
-    override fun List<Video>.sortVideos(): List<Video> = sortedWith(videoComparator())
+    override fun List<Video>.sortVideos(): List<Video> = StreamRanker.sorted(this)
 
     /** Ordre des flux : critères classés avec les flèches (langue puis qualité), voir [StreamRanker]. */
     private fun videoComparator(): Comparator<Video> = StreamRanker.videoComparator()
@@ -1332,7 +1337,7 @@ class FrUnified : Source() {
             FrSettings.KEY_VERIFY_STREAM_CONTENT,
             true,
             "Vérifier les liens (anti-popups)",
-            "Rejette les pages HTML qui se téléchargent à la place de la vidéo (FrenchStream et autres).",
+            "Sonde à la découverte, puis revérifie chaque lien Nuvio au clic avant lecture.",
         )
         action(
             "action_nuvio_diagnostic",
@@ -1348,17 +1353,17 @@ class FrUnified : Source() {
             FrSettings.KEY_NUVIO_CONCURRENCY,
             "3",
             "Sites interrogés en même temps",
-            arrayOf("2 — prudent", "3 — recommandé", "4 — rapide"),
-            arrayOf("2", "3", "4"),
+            arrayOf("2 — prudent", "3 — recommandé", "4 — rapide", "6 — parallèle"),
+            arrayOf("2", "3", "4", "6"),
         )
         list(
             FrSettings.KEY_NUVIO_SEARCH_MODE,
             "fast",
             "Mode de recherche",
             arrayOf(
-                "Rapide — s'arrête au premier site VF valide",
-                "Équilibré — deux sites et la VF prioritaire",
-                "Complet — tous les sites actifs (lent)",
+                "Rapide — parallèle, s'arrête à la première VF",
+                "Équilibré — parallèle, deux sites et la VF",
+                "Complet — tous les sites actifs en parallèle",
             ),
             arrayOf("fast", "balanced", "complete"),
         )
@@ -1425,13 +1430,13 @@ class FrUnified : Source() {
             FrSettings.KEY_DNS_HOSTS,
             "",
             "DNS personnalisé de l'extension",
-            "Une adresse par ligne (ex. 1.1.1.1, 8.8.8.8:53). Vide = DNS de l'appareil. " +
-                "Utile quand le DNS du téléphone ne résout pas certains sites.",
+            "Une adresse par ligne : 1.1.1.1, 8.8.8.8, 9.9.9.9 ou URL DoH " +
+                "(https://1.1.1.1/dns-query). Vide = DNS de l'appareil. DoH d'abord, puis UDP 53.",
         )
         action(
             "action_dns_test",
             "Tester la résolution DNS",
-            "Vérifie les domaines utilisés (catalogues, dépôts, sources) avec ce DNS.",
+            "Vérifie les domaines (catalogues, dépôts, sources) en DoH puis UDP.",
         ) { showDnsTestDialog(context) }
         edit(
             FrSettings.KEY_TOKENS,
@@ -1499,19 +1504,22 @@ class FrUnified : Source() {
             appendLine("📺 3 · SOURCES NUVIO")
             appendLine(
                 "Choisissez les sites activés (drapeau = langue), puis classez-les avec les flèches : la première " +
-                    "source est essayée en premier. « Vérifier les liens » rejette les popups HTML qui se " +
-                    "téléchargent à la place de la vidéo. La mise à jour automatique relit les dépôts et " +
-                    "rafraîchit les scripts une fois par jour ; « Mettre à jour maintenant » force l'opération.",
+                    "source est essayée en premier. Tous les sites partent en parallèle (2 à 6 à la fois). " +
+                    "« Vérifier les liens » sonde à la découverte puis revérifie au clic avant lecture. " +
+                    "La mise à jour automatique relit les dépôts une fois par jour.",
             )
             appendLine()
             appendLine("🧩 4 · STREMIO")
             appendLine(
-                "Les addons fournissent catalogues et serveurs. Le chargement se fait au clic ; un addon lent ne bloque plus les autres.",
+                "Les addons fournissent catalogues et serveurs. Le chargement se fait au clic ; " +
+                    "un addon lent ne bloque plus les autres.",
             )
             appendLine()
             appendLine("🌐 5 · RÉSEAU")
             appendLine(
-                "Le DNS personnalisé s'applique à toutes les requêtes de l'extension (sources, sondes, catalogues). La lecture finale est gérée par Aniyomi avec le DNS du téléphone.",
+                "Le DNS personnalisé utilise d'abord le DoH (HTTPS, ex. 1.1.1.1) puis UDP 53, avec repli " +
+                    "sur le DNS du téléphone. Il s'applique aux catalogues, manifests, sources et sondes. " +
+                    "La lecture finale reste gérée par Aniyomi.",
             )
         }
         AlertDialog.Builder(dialogContext)
@@ -1537,6 +1545,7 @@ class FrUnified : Source() {
             val configured = FrSettings.dnsHosts.joinToString(", ").ifBlank { "aucun (DNS du système)" }
             val report = buildString {
                 appendLine("DNS configuré : $configured")
+                appendLine("Ordre : DoH (HTTPS) → UDP 53 → DNS du système.")
                 appendLine()
                 hosts.forEach { host ->
                     val custom = runCatching {
@@ -1567,13 +1576,17 @@ class FrUnified : Source() {
         }
         AlertDialog.Builder(dialogContext)
             .setTitle("DNS personnalisé")
-            .setMessage("Une adresse par ligne (IP ou IP:port). Vide = DNS de l'appareil.")
+            .setMessage(
+                "Une adresse par ligne (1.1.1.1, 8.8.8.8 ou URL https://…/dns-query). " +
+                    "Vide = DNS de l'appareil.",
+            )
             .setView(input)
             .setNegativeButton("Annuler", null)
             .setPositiveButton("Enregistrer") { _, _ ->
                 preferences.edit()
                     .putString(FrSettings.KEY_DNS_HOSTS, input.text.toString().trim())
-                    .apply()
+                    .commit()
+                FrDns.clearCache()
                 displayToast("DNS enregistré")
             }
             .show()
@@ -1785,7 +1798,7 @@ class FrUnified : Source() {
                 .filterNot { leftover -> ordered.any { it == leftover } }
             preferences.edit()
                 .putString(FrSettings.KEY_NUVIO_ORDER, (ordered + leftovers).distinct().joinToString("\n"))
-                .apply()
+                .commit()
         }
 
         fun arrow(text: String, description: String, onClick: () -> Unit): Button = Button(dialogContext).apply {
@@ -1862,7 +1875,9 @@ class FrUnified : Source() {
         )
 
         fun persistOrder() {
-            preferences.edit().putString(FrSettings.KEY_STREAM_ORDER, ordered.joinToString("\n")).apply()
+            preferences.edit()
+                .putString(FrSettings.KEY_STREAM_ORDER, ordered.joinToString("\n"))
+                .commit()
         }
 
         fun arrow(text: String, description: String, onClick: () -> Unit): Button = Button(dialogContext).apply {
@@ -1913,21 +1928,26 @@ class FrUnified : Source() {
         }
         render()
 
-        AlertDialog.Builder(dialogContext)
+        val dialog = AlertDialog.Builder(dialogContext)
             .setTitle("Classer langues et qualités (${ordered.size})")
             .setView(
                 ScrollView(dialogContext).apply {
                     addView(container)
                 },
             )
-            .setNeutralButton("Ordre conseillé") { _, _ ->
-                preferences.edit()
-                    .putString(FrSettings.KEY_STREAM_ORDER, FrSettings.DEFAULT_STREAM_ORDER.joinToString("\n"))
-                    .apply()
+            .setNeutralButton("Ordre conseillé", null)
+            .setPositiveButton("Terminé") { _, _ -> persistOrder() }
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                ordered.clear()
+                ordered.addAll((FrSettings.DEFAULT_STREAM_ORDER + FrSettings.STREAM_CRITERIA).distinct())
+                persistOrder()
+                render()
                 displayToast("Ordre conseillé rétabli : VF, VFF, VFQ, MULTI, VOSTFR, VO, 1080p, 4K…")
             }
-            .setPositiveButton("Terminé", null)
-            .show()
+        }
+        runCatching { dialog.show() }
     }
 
     /** Relecture immédiate des dépôts Nuvio et rafraîchissement de tous les scripts. */
