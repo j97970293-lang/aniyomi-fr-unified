@@ -14,10 +14,10 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew :src:fr:frunified:spotlessApply
+      - run: ./gradlew :src:fr:frunified:spotlessApply > format-ci.log 2>&1 || true
       - run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
-          git add src/fr/frunified
+          git add src/fr/frunified format-ci.log
           git diff --cached --quiet || git commit -m 'style: apply Spotless formatting'
           git push origin HEAD:arena/01a081ce-aniyomi-fr-unified
