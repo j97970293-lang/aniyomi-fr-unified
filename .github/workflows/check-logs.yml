@@ -6,6 +6,7 @@ on:
       - "arena/01a08269-aniyomi-fr-unified"
     paths-ignore:
       - ".spotless-log.txt"
+  workflow_dispatch:
 
 permissions:
   contents: write
