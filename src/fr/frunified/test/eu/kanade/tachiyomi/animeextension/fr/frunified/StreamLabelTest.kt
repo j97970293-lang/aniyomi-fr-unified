@@ -93,4 +93,12 @@ class StreamLabelTest {
         assertEquals(listOf("VF", "VOSTFR"), StreamLabel.hosterLanguages("Nuvio · flemmix : VF, VOSTFR"))
         assertEquals(emptyList<String>(), StreamLabel.hosterLanguages("Stremio · Test Streams"))
     }
+    @Test
+    fun customAndUltraHighResolutionsAreRecognized() {
+        assertEquals(540, StreamLabel.qualityValue("540p"))
+        assertEquals(4320, StreamLabel.qualityValue("8K"))
+        assertEquals(540, StreamLabel.qualityOf("WEB 540p VF"))
+        assertEquals("8K", StreamLabel.qualityText(4320))
+    }
+
 }

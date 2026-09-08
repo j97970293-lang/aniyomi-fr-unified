@@ -49,12 +49,12 @@ data class StreamLabel(
         val LANGUAGE_ORDER = listOf("VF", "VFF", "VFQ", "MULTI", "VOSTFR", "VO")
 
         /** Qualités proposées au classement, de la plus courante à la plus rare. */
-        val QUALITY_VALUES = listOf(2160, 1440, 1080, 720, 480, 360)
+        val QUALITY_VALUES = listOf(4320, 2160, 1440, 1080, 720, 540, 480, 360)
 
         private val ENGINES = setOf(ENGINE_NUVIO, ENGINE_STREMIO)
-        private val HEADER = Regex("^(?:\\(([^()]+)\\))?\\s*(4K|\\d{3,4}p)?$")
+        private val HEADER = Regex("^(?:\\(([^()]+)\\))?\\s*(8K|4K|\\d{3,4}p)?$")
         private const val LANGUAGE_TOKENS = "VOSTFR|VOSTF|VOST|VFQ|VFF|VF|MULTI|TRUEFRENCH|FRENCH|VO"
-        private const val QUALITY_TOKENS = "2160p?|1440p?|1080p?|720p?|480p?|360p?|4K|UHD|FULL ?HD|FHD|HD|SD"
+        private const val QUALITY_TOKENS = "4320p?|2160p?|1440p?|1080p?|720p?|480p?|360p?|540p?|8K|4K|UHD|FULL ?HD|FHD|HD|SD"
         private val BRACKETED_TAG = Regex("(?i)[\\[(]\\s*(?:$LANGUAGE_TOKENS|$QUALITY_TOKENS)\\s*[\\])]")
         private val LOOSE_TAG = Regex("(?i)(^|[^A-Z0-9])(?:$LANGUAGE_TOKENS|$QUALITY_TOKENS)(?=[^A-Z0-9]|$)")
         private const val EPISODE_TOKENS = "S\\d{1,2}\\s*E\\d{1,3}|(?:saison|season|épisode|episode|ep)\\s*\\d{1,4}"
@@ -64,10 +64,15 @@ data class StreamLabel(
         private val SPACES = Regex("\\s+")
         private const val DETAIL_LIMIT = 48
 
-        fun qualityText(quality: Int): String = if (quality >= 2160) "4K" else "${quality}p"
+        fun qualityText(quality: Int): String = when (quality) {
+            4320 -> "8K"
+            2160 -> "4K"
+            else -> "${quality}p"
+        }
 
         /** Libellé long d'une qualité pour les réglages. */
         fun qualityLabel(quality: Int): String = when (quality) {
+            4320 -> "8K (4320p)"
             2160 -> "4K (2160p)"
             1440 -> "1440p (QHD)"
             1080 -> "1080p (Full HD)"
@@ -92,13 +97,16 @@ data class StreamLabel(
         fun qualityValue(token: String): Int? {
             val upper = token.trim().uppercase(Locale.ROOT).replace(" ", "")
             return when (upper) {
+                "4320", "4320P", "8K" -> 4320
                 "2160", "2160P", "4K", "UHD" -> 2160
                 "1440", "1440P", "QHD" -> 1440
                 "1080", "1080P", "FULLHD", "FHD" -> 1080
                 "720", "720P", "HD" -> 720
                 "480", "480P", "SD" -> 480
                 "360", "360P" -> 360
-                else -> null
+                else -> Regex("^(\\d{3,4})P?$").matchEntire(upper)?.groupValues?.get(1)?.toIntOrNull()
+                    ?.takeIf { it in 144..8640 }
+
             }
         }
 
@@ -111,7 +119,7 @@ data class StreamLabel(
             val engine = parts.getOrNull(offset + 1)?.takeIf { it in ENGINES } ?: return null
             val language = header?.groupValues?.getOrNull(1)?.takeIf(String::isNotBlank)
             val quality = header?.groupValues?.getOrNull(2)?.takeIf(String::isNotBlank)?.let { value ->
-                if (value == "4K") 2160 else value.removeSuffix("p").toIntOrNull()
+                when (value) { "8K" -> 4320; "4K" -> 2160; else -> value.removeSuffix("p").toIntOrNull() }
             }
             val detail = parts.drop(offset + 2).joinToString(SEPARATOR).ifBlank { null }
             return StreamLabel(language, quality, parts[offset], engine, detail)
@@ -130,6 +138,8 @@ data class StreamLabel(
         fun languageOf(text: String?): String? {
             if (text.isNullOrBlank()) return null
             val upper = text.uppercase(Locale.ROOT)
+            Regex("(?<!\\d)(\\d{3,4})P(?![A-Z0-9])").find(upper)?.groupValues?.get(1)?.toIntOrNull()
+                ?.takeIf { it in 144..8640 }?.let { return it }
             return when {
                 hasToken(upper, "VOSTFR|VOSTF|VOST") -> "VOSTFR"
                 hasToken(upper, "VFQ") -> "VFQ"
@@ -174,7 +184,8 @@ data class StreamLabel(
             if (text.isNullOrBlank()) return null
             val upper = text.uppercase(Locale.ROOT)
             return when {
-                upper.contains("2160") || upper.contains("4320") || hasToken(upper, "4K|UHD") -> 2160
+                upper.contains("4320") || hasToken(upper, "8K") -> 4320
+                upper.contains("2160") || hasToken(upper, "4K|UHD") -> 2160
                 upper.contains("1440") -> 1440
                 upper.contains("1080") || hasToken(upper, "FULL ?HD|FHD|FULLHD") -> 1080
                 upper.contains("720") || hasToken(upper, "HD") -> 720

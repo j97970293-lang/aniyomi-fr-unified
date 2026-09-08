@@ -1,3 +1,16 @@
+# Historique des versions
+
+## 16.11 — 8 septembre 2026
+
+- bouton **« + Qualité »** dans le classement à flèches : ajout libre de résolutions (540p, 2160p, 8K et valeurs de 144p à 8640p), persistées et prises en compte par le tri ;
+- libellés homogènes dans les listes de sources et de langues : emoji, nom court sans pays, et mention **★ conseillée** pour les valeurs recommandées ;
+- préréglages DNS en un clic (Cloudflare, Google, Quad9, AdGuard, téléphone et personnalisé) et diagnostic séparant précisément les chemins HTTPS/DoH, UDP 53 et le repli système ;
+- revérification des liens Nuvio juste avant lecture ou téléchargement ; un lien expiré ou devenu HTML est renouvelé auprès du même provider, pour le même épisode, la même langue et la même qualité ;
+- mise à jour automatique quotidienne des manifests et catalogues Stremio, avec action manuelle et bilan chiffré ;
+- `fetch` JavaScript réellement asynchrone sur un pool réseau hors du thread Rhino, boucle d'événements sûre, `Promise.all` parallèle et minuteries `setTimeout` fondées sur leur vraie échéance ;
+- réglages répartis en **8 sections courtes**, avec l'organisation des saisons visible dans la première section ;
+- sauvegarde JSON des réglages dans le presse-papiers, restauration manuelle et restauration quotidienne facultative depuis un lien HTTPS.
+
 # Journal des modifications
 
 ## 16.10 — 8 septembre 2026

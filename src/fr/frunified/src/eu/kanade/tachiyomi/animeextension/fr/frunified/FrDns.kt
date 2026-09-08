@@ -77,6 +77,32 @@ object FrDns : Dns {
         return addresses.toList()
     }
 
+    data class PathTest(
+        val server: String,
+        val dohEndpoint: String?,
+        val dohAddresses: List<String>,
+        val dohMs: Long,
+        val udpAddresses: List<String>,
+        val udpMs: Long,
+    )
+
+    /** Teste séparément les deux chemins, sans cache ni repli système. */
+    internal fun testPath(raw: String, hostname: String): PathTest {
+        val dohStarted = System.currentTimeMillis()
+        val doh = dohQuery(raw, hostname, TYPE_A)
+        val dohMs = System.currentTimeMillis() - dohStarted
+        val udpStarted = System.currentTimeMillis()
+        val udp = parseServer(raw)?.let { udpQuery(it, hostname, TYPE_A) }.orEmpty()
+        return PathTest(
+            server = raw,
+            dohEndpoint = dohEndpoint(raw),
+            dohAddresses = doh.mapNotNull(InetAddress::getHostAddress),
+            dohMs = dohMs,
+            udpAddresses = udp.mapNotNull(InetAddress::getHostAddress),
+            udpMs = System.currentTimeMillis() - udpStarted,
+        )
+    }
+
     /** DoH d'abord, puis UDP 53. */
     private fun query(raw: String, hostname: String, type: Int): List<InetAddress> {
         val viaDoh = dohQuery(raw, hostname, type)
@@ -106,6 +132,7 @@ object FrDns : Dns {
             "1.1.1.1", "1.0.0.1", "cloudflare-dns.com" -> "https://1.1.1.1/dns-query"
             "8.8.8.8", "8.8.4.4", "dns.google" -> "https://8.8.8.8/dns-query"
             "9.9.9.9", "149.112.112.112", "dns.quad9.net" -> "https://9.9.9.9/dns-query"
+            "94.140.14.14", "94.140.15.15", "dns.adguard-dns.com" -> "https://94.140.14.14/dns-query"
             else -> "https://$host/dns-query"
         }
     }
