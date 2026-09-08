@@ -149,8 +149,6 @@ data class StreamLabel(
         fun languageOf(text: String?): String? {
             if (text.isNullOrBlank()) return null
             val upper = text.uppercase(Locale.ROOT)
-            Regex("(?<!\\d)(\\d{3,4})P(?![A-Z0-9])").find(upper)?.groupValues?.get(1)?.toIntOrNull()
-                ?.takeIf { it in 144..8640 }?.let { return it }
             return when {
                 hasToken(upper, "VOSTFR|VOSTF|VOST") -> "VOSTFR"
                 hasToken(upper, "VFQ") -> "VFQ"
@@ -194,6 +192,8 @@ data class StreamLabel(
         fun qualityOf(text: String?): Int? {
             if (text.isNullOrBlank()) return null
             val upper = text.uppercase(Locale.ROOT)
+            Regex("(?<!\\d)(\\d{3,4})P(?![A-Z0-9])").find(upper)?.groupValues?.get(1)?.toIntOrNull()
+                ?.takeIf { it in 144..8640 }?.let { return it }
             return when {
                 upper.contains("4320") || hasToken(upper, "8K") -> 4320
                 upper.contains("2160") || hasToken(upper, "4K|UHD") -> 2160
