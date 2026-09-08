@@ -188,12 +188,12 @@ class FrUnified : Source() {
 
     override suspend fun getPopularAnime(page: Int): AnimesPage {
         val items = catalogItems(catalogFilterValue(), page, latest = false).splitMultiSeasonSeries()
-        return AnimesPage(items.map(CatalogItem::toSAnimeForLayout), items.isNotEmpty())
+        return AnimesPage(items.map { it.toSAnimeForLayout() }, items.isNotEmpty())
     }
 
     override suspend fun getLatestUpdates(page: Int): AnimesPage {
         val items = catalogItems(catalogFilterValue(), page, latest = true).splitMultiSeasonSeries()
-        return AnimesPage(items.map(CatalogItem::toSAnimeForLayout), items.isNotEmpty())
+        return AnimesPage(items.map { it.toSAnimeForLayout() }, items.isNotEmpty())
     }
 
     private suspend fun catalogItems(
@@ -283,7 +283,7 @@ class FrUnified : Source() {
         if (query.isBlank()) {
             val items = catalogItems(type, page, latest = false, stremioCatalogKey, stremioExtras)
                 .splitMultiSeasonSeries()
-            return@coroutineScope AnimesPage(items.map(CatalogItem::toSAnimeForLayout), items.isNotEmpty())
+            return@coroutineScope AnimesPage(items.map { it.toSAnimeForLayout() }, items.isNotEmpty())
         }
         val useStremioOnly = type == "stremio" ||
             !FrSettings.useMainCatalogs ||
@@ -306,7 +306,7 @@ class FrUnified : Source() {
             }
         }
         val items = jobs.awaitAll().flatten().deduplicate().splitMultiSeasonSeries()
-        AnimesPage(items.map(CatalogItem::toSAnimeForLayout), items.isNotEmpty())
+        AnimesPage(items.map { it.toSAnimeForLayout() }, items.isNotEmpty())
     }
 
     private fun catalogFilterValue(): String {
@@ -376,6 +376,7 @@ class FrUnified : Source() {
     private suspend fun splitSeasonEntries(item: CatalogItem): List<CatalogItem> {
         val seasons = when {
             item.id.catalog == "tmdb" && item.id.kind == "tv" -> tmdbSeasonNumbers(item.id)
+
             item.id.catalog == "stremio" && !item.id.kind.equals("movie", true) ->
                 stremioSeasonNumbers(item.id)
 
@@ -425,7 +426,6 @@ class FrUnified : Source() {
         }
         when (FrSettings.seriesLayout) {
             "merged" -> if (multiSeasonKind) anime.fetch_type = FetchType.Episodes
-
             "split" -> if (parsed.season != null) anime.fetch_type = FetchType.Episodes
         }
         return anime
@@ -1195,8 +1195,18 @@ class FrUnified : Source() {
             "Activer les catalogues principaux",
             "TMDB + AniList + Jikan. Désactiver pour ne garder que le catalogue Stremio.",
         )
-        switch(FrSettings.KEY_USE_TMDB, true, "TMDB — films et séries", "Catalogue général localisé (affiché par défaut).")
-        switch(FrSettings.KEY_USE_ANIME, true, "AniList — animés", "Catalogue d'animés avec titres français, romaji et anglais.")
+        switch(
+            FrSettings.KEY_USE_TMDB,
+            true,
+            "TMDB — films et séries",
+            "Catalogue général localisé (affiché par défaut).",
+        )
+        switch(
+            FrSettings.KEY_USE_ANIME,
+            true,
+            "AniList — animés",
+            "Catalogue d'animés avec titres français, romaji et anglais.",
+        )
         switch(
             FrSettings.KEY_USE_JIKAN,
             true,
@@ -1435,19 +1445,29 @@ class FrUnified : Source() {
     private fun showGuideDialog(dialogContext: Context) {
         val guide = buildString {
             appendLine("🎬 1 · CATALOGUES")
-            appendLine("Sélectionnez ce que vous voyez à l'accueil : TMDB (films/séries), AniList/Jikan (animés), Stremio. La langue principale pilote les fiches TMDB.")
+            appendLine(
+                "Sélectionnez ce que vous voyez à l'accueil : TMDB (films/séries), AniList/Jikan (animés), Stremio. La langue principale pilote les fiches TMDB.",
+            )
             appendLine()
             appendLine("🧭 2 · LECTURE")
-            appendLine("« Nuvio d'abord » essaie d'abord les sites de streaming (souvent la VF), puis Stremio en secours — ou l'inverse.")
+            appendLine(
+                "« Nuvio d'abord » essaie d'abord les sites de streaming (souvent la VF), puis Stremio en secours — ou l'inverse.",
+            )
             appendLine()
             appendLine("📺 3 · SOURCES NUVIO")
-            appendLine("Choisissez les sites activés (drapeau = langue), puis classez-les avec les flèches : la première source est essayée en premier. « Vérifier les liens » rejette les popups HTML qui se téléchargent à la place de la vidéo.")
+            appendLine(
+                "Choisissez les sites activés (drapeau = langue), puis classez-les avec les flèches : la première source est essayée en premier. « Vérifier les liens » rejette les popups HTML qui se téléchargent à la place de la vidéo.",
+            )
             appendLine()
             appendLine("🧩 4 · STREMIO")
-            appendLine("Les addons fournissent catalogues et serveurs. Le chargement se fait au clic ; un addon lent ne bloque plus les autres.")
+            appendLine(
+                "Les addons fournissent catalogues et serveurs. Le chargement se fait au clic ; un addon lent ne bloque plus les autres.",
+            )
             appendLine()
             appendLine("🌐 5 · RÉSEAU")
-            appendLine("Le DNS personnalisé s'applique à toutes les requêtes de l'extension (sources, sondes, catalogues). La lecture finale est gérée par Aniyomi avec le DNS du téléphone.")
+            appendLine(
+                "Le DNS personnalisé s'applique à toutes les requêtes de l'extension (sources, sondes, catalogues). La lecture finale est gérée par Aniyomi avec le DNS du téléphone.",
+            )
         }
         AlertDialog.Builder(dialogContext)
             .setTitle("Guide des réglages")
