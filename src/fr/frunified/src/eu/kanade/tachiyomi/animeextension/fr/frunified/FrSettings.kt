@@ -7,7 +7,7 @@ object FrSettings {
     const val KEY_SETTINGS_VERSION = "fr_unified_settings_version"
     const val SETTINGS_VERSION = 7
 
-    /** DNS UDP personnalisés (un par ligne) utilisés par tout le réseau de l'extension. */
+    /** Serveurs DNS personnalisés (IP, IP:port ou URL DoH, un par ligne). */
     const val KEY_DNS_HOSTS = "dns_hosts"
 
     /** Organisation des saisons dans les fiches : classique, fusionnées ou séparées. */
@@ -311,7 +311,7 @@ object FrSettings {
         get() = string(KEY_NUVIO_ORDER, RECOMMENDED_NUVIO_IDS.joinToString("\n"))
             .lineSequence().map(String::trim).filter(String::isNotBlank).toList()
     val nuvioConcurrency: Int
-        get() = string(KEY_NUVIO_CONCURRENCY, "3").toIntOrNull()?.coerceIn(2, 4) ?: 3
+        get() = string(KEY_NUVIO_CONCURRENCY, "3").toIntOrNull()?.coerceIn(2, 6) ?: 3
     val nuvioSearchMode: String
         get() = string(KEY_NUVIO_SEARCH_MODE, "fast").takeIf { it in setOf("fast", "balanced", "complete") }
             ?: "fast"
@@ -378,11 +378,21 @@ object FrSettings {
     val useAnimeCatalog: Boolean get() = useAniListCatalog || useJikanCatalog
     val popularCatalog: String get() = string(KEY_POPULAR, "mixed")
 
-    /** Serveurs DNS personnalisés (IP ou IP:port, un par ligne). Vide = DNS du système. */
+    /**
+     * Serveurs DNS personnalisés (un par ligne). Vide = DNS du système.
+     * Accepte une IP (`1.1.1.1`), `IP:port`, ou une URL DoH (`https://1.1.1.1/dns-query`).
+     */
     val dnsHosts: List<String>
         get() = string(KEY_DNS_HOSTS, "")
             .lineSequence()
-            .map { it.trim().removePrefix("https://").removePrefix("http://").trim() }
+            .map { line ->
+                val value = line.trim()
+                when {
+                    value.startsWith("https://", true) || value.startsWith("http://", true) ->
+                        value.trimEnd('/')
+                    else -> value
+                }
+            }
             .filter(String::isNotBlank)
             .distinct()
             .take(4)

@@ -47,6 +47,23 @@ class StreamRankerTest {
     }
 
     @Test
+    fun sortedMarksOnlyTheWinningStreamAsPreferred() {
+        FrSettings.init(preferences(emptyMap()))
+        val sorted = StreamRanker.sorted(
+            listOf(
+                video("(VOSTFR) 1080p · anime-sama · Nuvio", 1080),
+                video("(VF) 720p · flemmix · Nuvio", 720),
+                video("(VF) 1080p · frenchstream · Nuvio", 1080),
+                video("Test Streams · Stremio · lecteur inconnu"),
+            ),
+        )
+        assertEquals("(VF) 1080p · frenchstream · Nuvio", sorted.first().videoTitle)
+        assertTrue(sorted.first().preferred)
+        assertEquals(1, sorted.count { it.preferred })
+        assertFalse(sorted.last().preferred)
+    }
+
+    @Test
     fun arrowOrderIsHonouredWhenQualityIsMovedAboveLanguages() {
         FrSettings.init(preferences(mapOf(FrSettings.KEY_STREAM_ORDER to "4K\n1080p\nVF\nVOSTFR")))
         assertEquals(listOf("4K", "1080p", "VF", "VOSTFR"), FrSettings.streamOrder)

@@ -1,6 +1,12 @@
-# Rapport de validation — FR Unifié 16.9
+# Rapport de validation — FR Unifié 16.10
 
 Date : **8 septembre 2026**
+
+## 16.10 — contrôles réalisés avant publication
+
+La version **16.10 / code 10** ajoute le moteur Nuvio parallèle (plus de lots bloquants), la revérification des liens Nuvio au clic, le DNS over HTTPS et un classement à flèches qui persiste réellement. Les contrôles déterministes (ktlint, compilation Kotlin, suite JVM) sont exécutés par `build.yml` sur la pull request ; la signature de l’APK l’est par `publish.yml` sur le tag `v16.10`.
+
+Nouveaux tests déterministes : `FrDnsTest` (cartes DoH, construction/analyse d’un paquet DNS avec `ANCOUNT` en en-tête) et extension de `StreamRankerTest` (un seul flux préféré après `sorted`). `NuvioConcurrencyTest` reste le garde-fou du lancement simultané.
 
 ## 16.9 — contrôles réalisés avant publication
 
