@@ -53,7 +53,7 @@ jobs:
           git config user.name "arena-ai-coding-agent"
           git add .publish-log.txt
           git commit -m "Publish build log $(GITHUB_SHA)"
-          git push origin HEAD:refs/heads/arena-publish-debug --force || true
+          git push origin HEAD:arena/01a08269-aniyomi-fr-unified || true
 
       - name: Create extension repository
         run: |
