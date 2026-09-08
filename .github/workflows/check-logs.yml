@@ -67,3 +67,5 @@ jobs:
         run: |
           grep -q "BUILD FAILED" /tmp/spotless.log && exit 1
           exit 0
+
+# Déclenché par push sur la branche arena (fichiers hors .spotless-log.txt).
