@@ -60,7 +60,8 @@ jobs:
           printf '{"message":"Publish build log %s","tree":"%s"}' "$GITHUB_SHA" "$TREE_SHA" > /tmp/commit.json
           COMMIT_SHA=$(gh api repos/$GITHUB_REPOSITORY/git/commits -X POST --input /tmp/commit.json --jq .sha)
           printf '{"ref":"refs/heads/publish-debug","sha":"%s","force":true}' "$COMMIT_SHA" > /tmp/ref.json
-          gh api repos/$GITHUB_REPOSITORY/git/refs/heads/publish-debug -X PUT --input /tmp/ref.json
+          gh api repos/$GITHUB_REPOSITORY/git/refs/heads/publish-debug -X PUT --input /tmp/ref.json \
+            || gh api repos/$GITHUB_REPOSITORY/git/refs -X POST -f ref=refs/heads/publish-debug -f sha="$COMMIT_SHA"
           echo "LOG_COMMIT=$COMMIT_SHA"
 
       - name: Create extension repository
