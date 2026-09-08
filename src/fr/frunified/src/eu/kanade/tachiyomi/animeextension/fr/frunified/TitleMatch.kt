@@ -30,7 +30,7 @@ object TitleMatch {
             .replace(Regex("\\p{Mn}+"), "")
             .replace("&", " and ")
             .replace(Regex("[’'`]"), " ")
-            .replace(Regex("[^a-z0-9]+"), " ")
+            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
             .trim()
 
         // Retire une éventuelle année
@@ -58,20 +58,29 @@ object TitleMatch {
 
     private fun tokens(value: String): Set<String> =
         normalize(value).split(" ")
-            .filter { it.length >= 3 || (it.length == 4 && it.all { c -> c.isDigit() }) }
+            .filter { it.length >= 2 || (it.length == 1 && it.any { c -> Character.isLetter(c) }) }
             .toSet()
 
     /** Score 0.0 → 1.0 entre un titre du catalogue et un titre de source. */
     fun similarity(catalogTitle: String, sourceTitle: String): Double {
+        val rawA = catalogTitle.trim()
+        val rawB = sourceTitle.trim()
+        if (rawA.equals(rawB, ignoreCase = true)) return 1.0
+
         val a = normalize(catalogTitle)
         val b = normalize(sourceTitle)
         if (a.isBlank() || b.isBlank()) return 0.0
         if (a == b) return 1.0
-        if (a.length < 4 || b.length < 4) return 0.0
 
         val ta = tokens(catalogTitle)
         val tb = tokens(sourceTitle)
-        if (ta.isEmpty() || tb.isEmpty()) return 0.0
+        if (ta.isEmpty() || tb.isEmpty()) {
+            if (a.contains(b) || b.contains(a)) {
+                val ratio = minOf(a.length, b.length).toDouble() / maxOf(a.length, b.length)
+                return (0.7 * ratio + 0.3).coerceAtMost(1.0)
+            }
+            return 0.0
+        }
 
         val intersection = ta.intersect(tb).size.toDouble()
         val jaccard = intersection / (ta.size + tb.size - intersection)
