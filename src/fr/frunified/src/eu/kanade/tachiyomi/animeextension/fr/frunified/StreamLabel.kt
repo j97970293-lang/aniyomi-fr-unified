@@ -99,15 +99,21 @@ data class StreamLabel(
             val upper = token.trim().uppercase(Locale.ROOT).replace(" ", "")
             return when (upper) {
                 "4320", "4320P", "8K" -> 4320
+
                 "2160", "2160P", "4K", "UHD" -> 2160
+
                 "1440", "1440P", "QHD" -> 1440
+
                 "1080", "1080P", "FULLHD", "FHD" -> 1080
+
                 "720", "720P", "HD" -> 720
+
                 "480", "480P", "SD" -> 480
+
                 "360", "360P" -> 360
+
                 else -> Regex("^(\\d{3,4})P?$").matchEntire(upper)?.groupValues?.get(1)?.toIntOrNull()
                     ?.takeIf { it in 144..8640 }
-
             }
         }
 
@@ -120,7 +126,11 @@ data class StreamLabel(
             val engine = parts.getOrNull(offset + 1)?.takeIf { it in ENGINES } ?: return null
             val language = header?.groupValues?.getOrNull(1)?.takeIf(String::isNotBlank)
             val quality = header?.groupValues?.getOrNull(2)?.takeIf(String::isNotBlank)?.let { value ->
-                when (value) { "8K" -> 4320; "4K" -> 2160; else -> value.removeSuffix("p").toIntOrNull() }
+                when (value) {
+                    "8K" -> 4320
+                    "4K" -> 2160
+                    else -> value.removeSuffix("p").toIntOrNull()
+                }
             }
             val detail = parts.drop(offset + 2).joinToString(SEPARATOR).ifBlank { null }
             return StreamLabel(language, quality, parts[offset], engine, detail)
