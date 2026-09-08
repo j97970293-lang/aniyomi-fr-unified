@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - "arena/01a08269-aniyomi-fr-unified"
+    paths-ignore:
+      - ".spotless-log.txt"
+
+permissions:
+  contents: write
 
 jobs:
   spotless:
@@ -11,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: arena/01a08269-aniyomi-fr-unified
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -24,13 +31,20 @@ jobs:
       - name: Spotless check
         run: |
           chmod +x gradlew
-          if ! ./gradlew :src:fr:frunified:spotlessCheck > /tmp/spotless.log 2>&1; then
-            {
-              echo '## spotlessCheck FAILED'
-              echo '```'
-              tail -n 200 /tmp/spotless.log
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          echo '## spotlessCheck OK' >> "$GITHUB_STEP_SUMMARY"
+          ./gradlew :src:fr:frunified:spotlessCheck > /tmp/spotless.log 2>&1 || true
+          tail -n 250 /tmp/spotless.log > .spotless-log.txt
+
+      - name: Publish log to branch
+        if: always()
+        run: |
+          git config user.email "arena-ai-coding-agent@users.noreply.github.com"
+          git config user.name "arena-ai-coding-agent"
+          git add .spotless-log.txt
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Spotless log"
+          git push origin HEAD:arena/01a08269-aniyomi-fr-unified
+
+      - name: Fail on spotless failure
+        run: |
+          grep -q "BUILD FAILED" .spotless-log.txt && exit 1
+          exit 0

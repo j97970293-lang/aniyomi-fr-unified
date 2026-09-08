@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.animeextension.fr.frunified
 
 import android.content.SharedPreferences
+import org.json.JSONObject
 
 /** Préférences partagées par les catalogues, Stremio et le moteur Nuvio. */
 object FrSettings {
@@ -52,6 +53,9 @@ object FrSettings {
 
     /** Langues ajoutées au classement des flux (EN, TR, …) — tokens de 2 à 3 lettres. */
     const val KEY_STREAM_LANGUAGES = "stream_languages"
+
+    /** Configuration par source Nuvio : JSON `{ "idSource": { "CLÉ": "valeur" } }`. */
+    const val KEY_NUVIO_SOURCE_ENV = "nuvio_source_env"
     const val KEY_QUICK_SEARCH = "quick_search"
     const val KEY_BACKUP_AUTO_RESTORE = "backup_auto_restore"
     const val KEY_BACKUP_URL = "backup_url"
@@ -361,6 +365,32 @@ object FrSettings {
             .lineSequence().map(String::trim).filter(String::isNotBlank).toList()
     val nuvioConcurrency: Int
         get() = string(KEY_NUVIO_CONCURRENCY, "3").toIntOrNull()?.coerceIn(2, 6) ?: 3
+
+    /** Valeurs d'environnement saisies par l'utilisateur pour une source Nuvio. */
+    fun sourceEnvValues(scraperId: String): Map<String, String> {
+        val root = runCatching { JSONObject(string(KEY_NUVIO_SOURCE_ENV, "{}")) }.getOrNull() ?: return emptyMap()
+        val entry = root.optJSONObject(scraperId) ?: return emptyMap()
+        return entry.keys().asSequence()
+            .mapNotNull { key -> key.takeIf { entry.optString(key).isNotBlank() } }
+            .associateWith { entry.optString(it) }
+    }
+
+    /** Enregistre (ou efface) une valeur d'environnement pour une source Nuvio. */
+    fun putSourceEnv(scraperId: String, key: String, value: String) {
+        val root = runCatching { JSONObject(string(KEY_NUVIO_SOURCE_ENV, "{}")) }.getOrNull() ?: JSONObject()
+        val entry = root.optJSONObject(scraperId)?.let { JSONObject(it.toString()) } ?: JSONObject()
+        if (value.isBlank()) {
+            entry.remove(key)
+        } else {
+            entry.put(key, value)
+        }
+        if (entry.length() == 0) {
+            root.remove(scraperId)
+        } else {
+            root.put(scraperId, entry)
+        }
+        prefs?.edit()?.putString(KEY_NUVIO_SOURCE_ENV, root.toString())?.apply()
+    }
 
     /** Mise à jour automatique (quotidienne) des manifests et scripts Nuvio. */
     val nuvioAutoUpdate: Boolean get() = bool(KEY_NUVIO_AUTO_UPDATE, true)
