@@ -63,6 +63,7 @@ import java.util.TimeZone
  */
 class FrUnified : Source() {
     override val name = "FR Unifié"
+
     /**
      * « all » : FR Unifié n'est pas qu'une extension française — son contenu est
      * international (sites FR, TR, EN, …) et son interface propose le français et

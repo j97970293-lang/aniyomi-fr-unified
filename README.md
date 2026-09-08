@@ -1,6 +1,6 @@
 # FR Unifié pour Aniyomi
 
-**FR Unifié 16.13** est une extension Aniyomi autonome qui réunit catalogues, fiches, épisodes et sources de lecture dans une seule interface.
+**FR Unifié 16.14** est une extension Aniyomi autonome qui réunit catalogues, fiches, épisodes et sources de lecture dans une seule interface.
 
 ## Fonctions principales
 
@@ -73,6 +73,10 @@ Le sélecteur affiche les providers de **tous les dépôts ajoutés**, même s�
 
 La langue d’un site n’est plus une condition d’exécution : elle participe seulement au **classement des flux** (VF, VOSTFR, VO, EN, TR…). Vous pouvez ajouter vos propres langues classables depuis le dialogue « Classer les flux ».
 
+### Configuration des sources (clés API, jetons…)
+
+Certaines sources de dépôts tiers demandent leurs propres variables d’environnement (clé API, jeton, domaine). Quand un manifest les déclare (`env` / `requiredEnv`), le dialogue **Configurer les sources** les liste avec leurs valeurs par défaut ; les valeurs saisies sont injectées dans `process.env` avant chaque exécution. Une source dont une clé obligatoire est vide n’est pas lancée et est signalée « ⚙️ à configurer » dans le sélecteur et le diagnostic. Les clés API génériques (communes à toutes les sources) restent dans **Paramètres avancés**.
+
 ### Dépôt All-in-One-Nuvio optionnel
 
 Le dépôt demandé peut être ajouté manuellement depuis **Nuvio → ajouter un dépôt**, avec une seule saisie d’URL :
@@ -85,7 +89,7 @@ Une fois l’import confirmé, ouvrez **Nuvio → choisir les sources** : les **
 
 Les bundles internationaux utilisent parfois des fonctions Node ou des sites qui changent sans préavis. Le moteur apporte des polyfills Rhino, abaisse les boucles `for…of` et corrige plusieurs incompatibilités de portée, mais la disponibilité d’un provider tiers n’est jamais garantie.
 
-## Flux, langues et qualités (16.13)
+## Flux, langues et qualités (16.14)
 
 Chaque flux est présenté de la même façon, quel que soit le moteur :
 
@@ -121,7 +125,7 @@ Puis installez **FR Unifié** depuis **Parcourir → Extensions Anime**.
 Le fichier de version est nommé :
 
 ```text
-FR-Unifie-Aniyomi-v16.13.apk
+FR-Unifie-Aniyomi-v16.14.apk
 ```
 
 Android peut demander l’autorisation d’installer depuis la source utilisée. Lors du premier lancement, Aniyomi peut aussi demander de faire confiance au certificat de l’extension.
@@ -151,7 +155,7 @@ La section **Sauvegarde** ne demande plus de lien :
 
 ## Diagnostic
 
-Le diagnostic Nuvio teste le chemin réel Kotlin → Rhino → réseau. Les providers partent en parallèle (sans attendre la fin d’un lot), et une réussite VOSTFR ne stoppe pas la recherche tant qu’une VF peut encore être trouvée. Au clic, les liens Nuvio sont revérifiés. Les hosters des deux moteurs restent disponibles dans l’ordre choisi. Un addon Stremio lent est abandonné après 15 secondes sans bloquer la liste.
+Le diagnostic Nuvio teste le chemin réel Kotlin → Rhino → réseau. **Tous les sites activés sont interrogés jusqu’au bout, en parallèle** : il n’y a plus de mode de recherche ni d’arrêt quand une VF est trouvée, chaque site renvoie tous ses liens (bornés par « flux maximum par site », illimité par défaut). Au clic, les liens Nuvio sont revérifiés. Les hosters des deux moteurs restent disponibles dans l’ordre choisi. Un addon Stremio lent est abandonné après 15 secondes sans bloquer la liste.
 
 ## Compilation locale
 

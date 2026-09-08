@@ -28,23 +28,36 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Spotless check
+      - name: Spotless check and auto-fix
         run: |
           chmod +x gradlew
-          ./gradlew :src:fr:frunified:spotlessCheck > /tmp/spotless.log 2>&1 || true
-          tail -n 250 /tmp/spotless.log > .spotless-log.txt
+          if ./gradlew :src:fr:frunified:spotlessCheck > /tmp/spotless.log 2>&1; then
+            echo '## spotlessCheck OK' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 5 /tmp/spotless.log > .spotless-log.txt
+          else
+            echo '## spotlessCheck FAILED — applying spotlessApply' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 250 /tmp/spotless.log >> "$GITHUB_STEP_SUMMARY"
+            ./gradlew :src:fr:frunified:spotlessApply > /tmp/spotless-apply.log 2>&1 || true
+            {
+              echo '## apply'
+              echo '```'
+              tail -n 40 /tmp/spotless-apply.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            git diff --stat > .spotless-log.txt || true
+          fi
 
-      - name: Publish log to branch
+      - name: Commit applied fixes
         if: always()
         run: |
           git config user.email "arena-ai-coding-agent@users.noreply.github.com"
           git config user.name "arena-ai-coding-agent"
-          git add .spotless-log.txt
+          git add -A
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m "Spotless log"
+          git commit -m "Spotless auto-fix"
           git push origin HEAD:arena/01a08269-aniyomi-fr-unified
 
       - name: Fail on spotless failure
         run: |
-          grep -q "BUILD FAILED" .spotless-log.txt && exit 1
+          grep -q "BUILD FAILED" /tmp/spotless.log && exit 1
           exit 0

@@ -228,7 +228,8 @@ object FrSettings {
 
     /** Tous les critères de flux connus du classement à flèches (langues puis qualités). */
     val STREAM_CRITERIA: List<String>
-        get() = StreamLabel.LANGUAGE_ORDER + customLanguages +
+        get() = StreamLabel.LANGUAGE_ORDER +
+            customLanguages +
             (customQualities + StreamLabel.QUALITY_VALUES).distinct().sortedDescending().map(StreamLabel::qualityText)
 
     /**
@@ -354,6 +355,7 @@ object FrSettings {
         } else {
             GOWARU_NUVIO_IDS.filterNot(::isNuvioEnabled).toSet()
         }
+
     /**
      * Nombre maximal de flux par site (0 = illimité, valeur par défaut depuis la 16.13 :
      * les sites fournissent souvent 8 à 20 liens par épisode, comme dans NuviO).
@@ -468,6 +470,7 @@ object FrSettings {
             .takeIf { it in L10n.UI_LANGUAGE_LABELS } ?: L10n.FR
 
     val tmdbApiKey: String get() = string(KEY_TMDB, DEFAULT_TMDB_KEY).trim().ifBlank { DEFAULT_TMDB_KEY }
+
     /** Déduit : des catalogues principaux existent si TMDB ou AniList est actif. */
     val useMainCatalogs: Boolean get() = useTmdbCatalog || useAniListCatalog
     val useTmdbCatalog: Boolean get() = bool(KEY_USE_TMDB, true)
