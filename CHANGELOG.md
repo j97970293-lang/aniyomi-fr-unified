@@ -1,5 +1,13 @@
 # Historique des versions
 
+## 16.14 — 8 septembre 2026
+
+- **tous les sites, toujours** : suppression des modes de recherche rapide/équilibré/complet et de l'arrêt quand une VF est trouvée — tous les sites activés sont interrogés jusqu'au bout, en parallèle ; chaque site renvoie l'intégralité de ses liens (bornés uniquement par « flux maximum par site », illimité par défaut). C'est la cause principale du « seulement 2 sites sur 27 répondent » ;
+- **configuration des sources dans l'application** : les variables d'environnement demandées par un manifest Nuvio (`env` / `requiredEnv` : clés API, jetons, domaines…) se saisissent dans « Configurer les sources » ; une source dont une clé obligatoire est vide n'est pas exécutée et est signalée « ⚙️ à configurer » dans le sélecteur et le diagnostic ;
+- **moteur Rhino durci** pour les bundles de sites tiers (ex. Peachify, Moviebox) : polyfills complémentaires — `String.padStart/padEnd`, `trimStart/trimEnd`, `includes/startsWith/endsWith`, `Array.includes/find/findIndex`, `Array.from`, `Object.assign`, `Number.isInteger/isNaN/isFinite`, `performance.now` ;
+- nettoyage des réglages obsolètes : les clés « langues Nuvio » et « modes de recherche » sont supprimées (migration des réglages v10) ;
+- mise à jour `extVersionCode = 14`.
+
 ## 16.13 — 8 septembre 2026
 
 - **interface bilingue français/anglais** : nouveau réglage « Langue de l'application » (section Général) qui traduit tous les libellés, popups, toasts, diagnostics et libellés d'épisodes ; FR Unifié n'est plus une extension « française » seulement — elle apparaît désormais dans tous les filtres de langue d'Aniyomi ;

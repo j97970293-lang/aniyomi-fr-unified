@@ -1,5 +1,0 @@
-
-For more on this, please refer to https://docs.gradle.org/8.13/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
-
-BUILD SUCCESSFUL in 2m 30s
-16 actionable tasks: 16 executed
