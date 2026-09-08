@@ -2107,7 +2107,7 @@ class FrUnified : Source() {
             setPadding(padding, padding, padding, padding)
         }
         fun caption(text: String) {
-            addView(
+            container.addView(
                 TextView(dialogContext).apply {
                     this.text = text
                     textSize = 12f
@@ -2894,7 +2894,7 @@ class FrUnified : Source() {
         }
         AlertDialog.Builder(dialogContext)
             .setTitle(L10n.t("Restaurer une sauvegarde", "Restore a backup"))
-            .setItems(items) { _, which ->
+            .setItems(items.toTypedArray()) { _, which ->
                 when (which) {
                     0 -> if (files.isEmpty()) {
                         displayToast(
