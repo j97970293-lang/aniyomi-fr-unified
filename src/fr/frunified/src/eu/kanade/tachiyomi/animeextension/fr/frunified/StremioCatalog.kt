@@ -301,9 +301,13 @@ object StremioCatalog {
         val elapsedMs: Long,
     ) {
         fun summary(): String =
-            L10n.t("Manifests : ", "Manifests: ") + "$succeeded/$manifests · " +
-                L10n.t("échecs : ", "failures: ") + failed + "\n" +
-                L10n.t("Catalogues détectés : ", "Catalogs detected: ") + "$catalogs (${elapsedMs / 1000} s)"
+            L10n.t("Manifests : ", "Manifests: ") +
+                "$succeeded/$manifests · " +
+                L10n.t("échecs : ", "failures: ") +
+                failed +
+                "\n" +
+                L10n.t("Catalogues détectés : ", "Catalogs detected: ") +
+                "$catalogs (${elapsedMs / 1000} s)"
     }
 
     /** Force le rechargement parallèle des manifests et de chaque entrée catalogs[]. */

@@ -1662,7 +1662,7 @@ class FrUnified : Source() {
                         "La lecture finale reste gérée par Aniyomi.",
                     "Custom DNS uses DoH first (HTTPS, e.g. 1.1.1.1), then UDP 53, falling back to the phone " +
                         "DNS. It applies to catalogs, manifests, sources and probes. " +
-                            "Final playback stays with Aniyomi.",
+                        "Final playback stays with Aniyomi.",
                 ),
             )
             appendLine()
@@ -2555,7 +2555,7 @@ class FrUnified : Source() {
                 }
                 val labelText =
                     "${index + 1}. ${FrSettings.flagForLanguages(scraper.contentLanguage)} ${scraper.name}$recLabel" +
-                    disabledLabel
+                        disabledLabel
                 val nameView = TextView(dialogContext).apply {
                     text = labelText
                     textSize = 14f
@@ -2590,9 +2590,11 @@ class FrUnified : Source() {
                     setPadding(0, rowVPad, 0, rowVPad)
                     addView(textColumn)
                     addView(arrowButton("⏫", L10n.t("Tout en haut", "To the top"), index > 0) { moveTo(0) })
-                    addView(arrowButton("▲", L10n.t("Monter d'une place", "Move up one"), index > 0) {
-                        moveTo(index - 1)
-                    })
+                    addView(
+                        arrowButton("▲", L10n.t("Monter d'une place", "Move up one"), index > 0) {
+                            moveTo(index - 1)
+                        },
+                    )
                     addView(
                         arrowButton("▼", L10n.t("Descendre d'une place", "Move down one"), index < ordered.size - 1) {
                             moveTo(index + 1)
@@ -2677,17 +2679,18 @@ class FrUnified : Source() {
             ordered.forEachIndexed { index, criterion ->
                 val isLanguage = criterion in StreamLabel.LANGUAGE_ORDER ||
                     FrSettings.customLanguages.any { it.equals(criterion, true) }
-                val labelText = "${index + 1}. " + when {
-                    isLanguage && criterion in StreamLabel.LANGUAGE_ORDER ->
-                        "🗣️ ${StreamLabel.languageLabel(criterion)}"
+                val labelText = "${index + 1}. " +
+                    when {
+                        isLanguage && criterion in StreamLabel.LANGUAGE_ORDER ->
+                            "🗣️ ${StreamLabel.languageLabel(criterion)}"
 
-                    isLanguage ->
-                        "${FrSettings.LANGUAGE_FLAGS[criterion.lowercase()] ?: "🌐"} " +
-                            "${criterion.uppercase()} — ${L10n.t("langue", "language")}"
+                        isLanguage ->
+                            "${FrSettings.LANGUAGE_FLAGS[criterion.lowercase()] ?: "🌐"} " +
+                                "${criterion.uppercase()} — ${L10n.t("langue", "language")}"
 
-                    else ->
-                        "🎞️ ${StreamLabel.qualityValue(criterion)?.let(StreamLabel::qualityLabel) ?: criterion}"
-                }
+                        else ->
+                            "🎞️ ${StreamLabel.qualityValue(criterion)?.let(StreamLabel::qualityLabel) ?: criterion}"
+                    }
                 val textView = TextView(dialogContext).apply {
                     text = labelText
                     textSize = 14f
@@ -2708,9 +2711,11 @@ class FrUnified : Source() {
                     setPadding(0, rowVPad, 0, rowVPad)
                     addView(textView)
                     addView(arrowButton("⏫", L10n.t("Tout en haut", "To the top"), index > 0) { moveTo(0) })
-                    addView(arrowButton("▲", L10n.t("Monter d'une place", "Move up one"), index > 0) {
-                        moveTo(index - 1)
-                    })
+                    addView(
+                        arrowButton("▲", L10n.t("Monter d'une place", "Move up one"), index > 0) {
+                            moveTo(index - 1)
+                        },
+                    )
                     addView(
                         arrowButton("▼", L10n.t("Descendre d'une place", "Move down one"), index < ordered.size - 1) {
                             moveTo(index + 1)
@@ -2923,7 +2928,8 @@ class FrUnified : Source() {
 
     private fun saveBackupToFile(dialogContext: Context, json: String) {
         val name = "fr-unified-backup-" +
-            SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date()) + ".json"
+            SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date()) +
+            ".json"
         val result = runCatching {
             val resolver = dialogContext.contentResolver
             if (Build.VERSION.SDK_INT >= 29) {
@@ -2983,7 +2989,7 @@ class FrUnified : Source() {
                         "Choisir un fichier de sauvegarde… (${files.size} trouvé(s))",
                         "Choose a backup file… (${files.size} found)",
                     )
-                }
+                },
             )
             add(L10n.t("Coller le JSON", "Paste the JSON"))
             add(L10n.t("Lien HTTPS (synchronisation)", "HTTPS link (sync)"))
