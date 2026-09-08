@@ -188,12 +188,12 @@ class FrUnified : Source() {
 
     override suspend fun getPopularAnime(page: Int): AnimesPage {
         val items = catalogItems(catalogFilterValue(), page, latest = false).splitMultiSeasonSeries()
-        return AnimesPage(items.map(CatalogItem::toSAnimeForLayout), items.isNotEmpty())
+        return AnimesPage(items.map { it.toSAnimeForLayout() }, items.isNotEmpty())
     }
 
     override suspend fun getLatestUpdates(page: Int): AnimesPage {
         val items = catalogItems(catalogFilterValue(), page, latest = true).splitMultiSeasonSeries()
-        return AnimesPage(items.map(CatalogItem::toSAnimeForLayout), items.isNotEmpty())
+        return AnimesPage(items.map { it.toSAnimeForLayout() }, items.isNotEmpty())
     }
 
     private suspend fun catalogItems(
@@ -283,7 +283,7 @@ class FrUnified : Source() {
         if (query.isBlank()) {
             val items = catalogItems(type, page, latest = false, stremioCatalogKey, stremioExtras)
                 .splitMultiSeasonSeries()
-            return@coroutineScope AnimesPage(items.map(CatalogItem::toSAnimeForLayout), items.isNotEmpty())
+            return@coroutineScope AnimesPage(items.map { it.toSAnimeForLayout() }, items.isNotEmpty())
         }
         val useStremioOnly = type == "stremio" ||
             !FrSettings.useMainCatalogs ||
@@ -306,7 +306,7 @@ class FrUnified : Source() {
             }
         }
         val items = jobs.awaitAll().flatten().deduplicate().splitMultiSeasonSeries()
-        AnimesPage(items.map(CatalogItem::toSAnimeForLayout), items.isNotEmpty())
+        AnimesPage(items.map { it.toSAnimeForLayout() }, items.isNotEmpty())
     }
 
     private fun catalogFilterValue(): String {
