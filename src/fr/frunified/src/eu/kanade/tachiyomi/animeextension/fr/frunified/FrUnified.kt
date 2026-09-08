@@ -2226,7 +2226,9 @@ class FrUnified : Source() {
     ) {
         addPreference(
             EditTextPreference(context).apply {
-                this      this.summary = summary
+                this.key = key
+                this.title = title
+                this.summary = summary
                 dialogTitle = title
                 setDefaultValue(default)
                 setOnBindEditTextListener { input ->
@@ -2318,10 +2320,6 @@ class FrUnified : Source() {
             SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
                 timeZone = TimeZone.getTimeZone("UTC")
             }.parse(value)?.time ?: 0L
-        }.getOrDefault(0L)
-    }
-}
-e(value)?.time ?: 0L
         }.getOrDefault(0L)
     }
 }

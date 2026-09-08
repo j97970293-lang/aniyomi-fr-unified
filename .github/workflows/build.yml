@@ -31,28 +31,7 @@ jobs:
       - name: Build and check formatting
         run: |
           chmod +x gradlew
-          set +e
-          ./gradlew :src:fr:frunified:spotlessCheck :src:fr:frunified:testDebugUnitTest :src:fr:frunified:lintDebug :src:fr:frunified:assembleDebug 2>&1 | tee gradle-ci.log
-          status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            echo "::group::gradle failure tail"
-            tail -n 80 gradle-ci.log
-            echo "::endgroup::"
-            python3 - <<'PY'
-          from pathlib import Path
-          lines = Path("gradle-ci.log").read_text(errors="replace").splitlines()
-          interesting = [line for line in lines if any(token in line for token in (
-              "FAILED", "Error", "error:", "Violation", "spotless", "ktlint", "e: ", "What went wrong",
-          ))][-40:]
-          if not interesting:
-              interesting = lines[-40:]
-          for line in interesting:
-              text = line.replace("%", "%25").replace("\r", "").strip()[:240]
-              if text:
-                  print(f"::error::{text}")
-          PY
-            exit "$status"
-          fi
+          ./gradlew :src:fr:frunified:spotlessCheck :src:fr:frunified:testDebugUnitTest :src:fr:frunified:lintDebug :src:fr:frunified:assembleDebug
 
       - name: Upload test APK
         uses: actions/upload-artifact@v4
