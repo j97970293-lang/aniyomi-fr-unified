@@ -54,7 +54,8 @@ data class StreamLabel(
         private val ENGINES = setOf(ENGINE_NUVIO, ENGINE_STREMIO)
         private val HEADER = Regex("^(?:\\(([^()]+)\\))?\\s*(8K|4K|\\d{3,4}p)?$")
         private const val LANGUAGE_TOKENS = "VOSTFR|VOSTF|VOST|VFQ|VFF|VF|MULTI|TRUEFRENCH|FRENCH|VO"
-        private const val QUALITY_TOKENS = "4320p?|2160p?|1440p?|1080p?|720p?|480p?|360p?|540p?|8K|4K|UHD|FULL ?HD|FHD|HD|SD"
+        private const val QUALITY_TOKENS =
+            "4320p?|2160p?|1440p?|1080p?|720p?|540p?|480p?|360p?|8K|4K|UHD|FULL ?HD|FHD|HD|SD"
         private val BRACKETED_TAG = Regex("(?i)[\\[(]\\s*(?:$LANGUAGE_TOKENS|$QUALITY_TOKENS)\\s*[\\])]")
         private val LOOSE_TAG = Regex("(?i)(^|[^A-Z0-9])(?:$LANGUAGE_TOKENS|$QUALITY_TOKENS)(?=[^A-Z0-9]|$)")
         private const val EPISODE_TOKENS = "S\\d{1,2}\\s*E\\d{1,3}|(?:saison|season|épisode|episode|ep)\\s*\\d{1,4}"
