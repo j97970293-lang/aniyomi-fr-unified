@@ -243,11 +243,11 @@ object NuvioClient {
     }
 
     /** Variables d'environnement déclarées par un manifest (`{ "API_KEY": "défaut" }`). */
-    private fun envObject(object: JSONObject?): Map<String, String> {
-        if (object == null) return emptyMap()
-        return object.keys().asSequence()
-            .mapNotNull { key -> key.takeIf { object.optString(key).isNotBlank() } }
-            .associateWith { object.optString(it) }
+    private fun envObject(envJson: JSONObject?): Map<String, String> {
+        if (envJson == null) return emptyMap()
+        return envJson.keys().asSequence()
+            .mapNotNull { key -> key.takeIf { envJson.optString(key).isNotBlank() } }
+            .associateWith { envJson.optString(it) }
     }
 
     // ----------------------------------------------------- exécution JS
