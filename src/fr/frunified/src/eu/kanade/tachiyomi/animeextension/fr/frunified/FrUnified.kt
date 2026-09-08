@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.SharedPreferences
 import android.text.InputType
+import android.text.TextUtils
 import android.view.Gravity
 import android.widget.Button
 import android.widget.CheckBox
@@ -1883,18 +1884,23 @@ class FrUnified : Source() {
         byId: Map<String, NuvioClient.NuvioScraper>,
     ) {
         val density = dialogContext.resources.displayMetrics.density
-        val padding = (density * 10).toInt()
+        val padding = (density * 12).toInt()
         val container = LinearLayout(dialogContext).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(padding, padding, padding, 0)
+            setPadding(padding, padding, padding, padding)
         }
         container.addView(
             TextView(dialogContext).apply {
-                text = "N° 1 = essayée en premier. L'ordre est enregistré à chaque déplacement."
+                text = "N° 1 = source essayée en priorité. L'ordre est enregistré à chaque déplacement."
                 textSize = 13f
-                setPadding(0, 0, 0, (density * 8).toInt())
+                setPadding(0, 0, 0, (density * 10).toInt())
             },
         )
+
+        val itemsContainer = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        container.addView(itemsContainer)
 
         fun persistOrder() {
             val leftovers = FrSettings.nuvioOrder
@@ -1905,27 +1911,35 @@ class FrUnified : Source() {
                 .commit()
         }
 
-        fun arrow(text: String, description: String, onClick: () -> Unit): Button = Button(dialogContext).apply {
-            this.text = text
-            contentDescription = description
-            textSize = 13f
-            minWidth = 0
-            minHeight = 0
-            setPadding((density * 5).toInt(), 0, (density * 5).toInt(), 0)
-            setOnClickListener { onClick() }
-        }
+        fun arrowButton(text: String, description: String, enabled: Boolean, onClick: () -> Unit): Button =
+            Button(dialogContext).apply {
+                this.text = text
+                contentDescription = description
+                isEnabled = enabled
+                alpha = if (enabled) 1.0f else 0.3f
+                textSize = 14f
+                minWidth = 0
+                minHeight = 0
+                background = null
+                val hPad = (density * 6).toInt()
+                val vPad = (density * 4).toInt()
+                setPadding(hPad, vPad, hPad, vPad)
+                setOnClickListener { if (enabled) onClick() }
+            }
 
         fun render() {
-            if (container.childCount > 1) {
-                container.removeViews(1, container.childCount - 1)
-            }
+            itemsContainer.removeAllViews()
             ordered.forEachIndexed { index, key ->
                 val scraper = byId.getValue(key)
-                val labelText = "${index + 1}. ${FrSettings.flagForLanguages(scraper.contentLanguage)} ${scraper.name}"
+                val isRec = scraper.id in FrSettings.RECOMMENDED_NUVIO_IDS
+                val recLabel = if (isRec) " ★" else ""
+                val labelText =
+                    "${index + 1}. ${FrSettings.flagForLanguages(scraper.contentLanguage)} ${scraper.name}$recLabel"
                 val textView = TextView(dialogContext).apply {
                     text = labelText
                     textSize = 14f
                     maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 }
                 fun moveTo(target: Int) {
@@ -1937,13 +1951,19 @@ class FrUnified : Source() {
                 val row = LinearLayout(dialogContext).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
+                    val rowVPad = (density * 4).toInt()
+                    setPadding(0, rowVPad, 0, rowVPad)
                     addView(textView)
-                    addView(arrow("⏫", "Déplacer tout en haut") { moveTo(0) })
-                    addView(arrow("▲", "Monter d'une place") { moveTo(index - 1) })
-                    addView(arrow("▼", "Descendre d'une place") { moveTo(index + 1) })
-                    addView(arrow("⏬", "Déplacer tout en bas") { moveTo(ordered.size - 1) })
+                    addView(arrowButton("⏫", "Déplacer tout en haut", index > 0) { moveTo(0) })
+                    addView(arrowButton("▲", "Monter d'une place", index > 0) { moveTo(index - 1) })
+                    addView(arrowButton("▼", "Descendre d'une place", index < ordered.size - 1) { moveTo(index + 1) })
+                    addView(
+                        arrowButton("⏬", "Déplacer tout en bas", index < ordered.size - 1) {
+                            moveTo(ordered.size - 1)
+                        },
+                    )
                 }
-                container.addView(row)
+                itemsContainer.addView(row)
             }
         }
         render()
@@ -1963,10 +1983,10 @@ class FrUnified : Source() {
     private fun showStreamOrderDialog(dialogContext: Context) {
         val ordered = (FrSettings.streamOrder + FrSettings.STREAM_CRITERIA).distinct().toMutableList()
         val density = dialogContext.resources.displayMetrics.density
-        val padding = (density * 10).toInt()
+        val padding = (density * 12).toInt()
         val container = LinearLayout(dialogContext).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(padding, padding, padding, 0)
+            setPadding(padding, padding, padding, padding)
         }
         container.addView(
             TextView(dialogContext).apply {
@@ -1984,20 +2004,28 @@ class FrUnified : Source() {
                 .commit()
         }
 
-        fun arrow(text: String, description: String, onClick: () -> Unit): Button = Button(dialogContext).apply {
-            this.text = text
-            contentDescription = description
-            textSize = 13f
-            minWidth = 0
-            minHeight = 0
-            setPadding((density * 5).toInt(), 0, (density * 5).toInt(), 0)
-            setOnClickListener { onClick() }
+        fun arrowButton(text: String, description: String, enabled: Boolean, onClick: () -> Unit): Button =
+            Button(dialogContext).apply {
+                this.text = text
+                contentDescription = description
+                isEnabled = enabled
+                alpha = if (enabled) 1.0f else 0.3f
+                textSize = 14f
+                minWidth = 0
+                minHeight = 0
+                background = null
+                val hPad = (density * 6).toInt()
+                val vPad = (density * 4).toInt()
+                setPadding(hPad, vPad, hPad, vPad)
+                setOnClickListener { if (enabled) onClick() }
+            }
+
+        val itemsContainer = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
         }
 
         fun render() {
-            if (container.childCount > 2) {
-                container.removeViews(2, container.childCount - 2)
-            }
+            itemsContainer.removeAllViews()
             ordered.forEachIndexed { index, criterion ->
                 val isLanguage = criterion in StreamLabel.LANGUAGE_ORDER
                 val labelText = "${index + 1}. ${if (isLanguage) "🗣️" else "🎞️"} " +
@@ -2010,6 +2038,7 @@ class FrUnified : Source() {
                     text = labelText
                     textSize = 14f
                     maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 }
                 fun moveTo(target: Int) {
@@ -2021,17 +2050,24 @@ class FrUnified : Source() {
                 val row = LinearLayout(dialogContext).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
+                    val rowVPad = (density * 4).toInt()
+                    setPadding(0, rowVPad, 0, rowVPad)
                     addView(textView)
-                    addView(arrow("⏫", "Déplacer tout en haut") { moveTo(0) })
-                    addView(arrow("▲", "Monter d'une place") { moveTo(index - 1) })
-                    addView(arrow("▼", "Descendre d'une place") { moveTo(index + 1) })
-                    addView(arrow("⏬", "Déplacer tout en bas") { moveTo(ordered.size - 1) })
+                    addView(arrowButton("⏫", "Déplacer tout en haut", index > 0) { moveTo(0) })
+                    addView(arrowButton("▲", "Monter d'une place", index > 0) { moveTo(index - 1) })
+                    addView(arrowButton("▼", "Descendre d'une place", index < ordered.size - 1) { moveTo(index + 1) })
+                    addView(
+                        arrowButton("⏬", "Déplacer tout en bas", index < ordered.size - 1) {
+                            moveTo(ordered.size - 1)
+                        },
+                    )
                 }
-                container.addView(row)
+                itemsContainer.addView(row)
             }
         }
+
         val addQuality = Button(dialogContext).apply {
-            text = "+ Qualité"
+            text = "+ Ajouter une qualité"
             contentDescription = "Ajouter une résolution personnalisée"
             setOnClickListener {
                 val input = EditText(dialogContext).apply {
@@ -2061,7 +2097,8 @@ class FrUnified : Source() {
                     .show()
             }
         }
-        container.addView(addQuality, 1)
+        container.addView(addQuality)
+        container.addView(itemsContainer)
         render()
 
         val dialog = AlertDialog.Builder(dialogContext)
@@ -2093,7 +2130,8 @@ class FrUnified : Source() {
         AlertDialog.Builder(dialogContext)
             .setTitle("Sauvegarde copiée")
             .setMessage(
-                "${preferences.all.size} réglages copiés dans le presse-papiers. Conservez ce JSON dans un endroit sûr.",
+                "${preferences.all.size} réglages copiés dans le presse-papiers. " +
+                    "Conservez ce JSON dans un endroit sûr.",
             )
             .setPositiveButton("Fermer", null)
             .show()

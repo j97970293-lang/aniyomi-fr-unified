@@ -1,7 +1,7 @@
 ext {
     extName = 'FR Unifié'
     extClass = '.FrUnified'
-    extVersionCode = 11
+    extVersionCode = 12
     extNames = ['FR Unifié']
     isNsfw = false
 }

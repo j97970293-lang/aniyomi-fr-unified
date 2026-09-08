@@ -584,14 +584,15 @@ object NuvioClient {
             "balanced" -> 2
             else -> 1
         }
+        val (tmdbTarget, absoluteTarget) = resolveEpisodeTargets(tmdbId, season, episode, payload)
         return runParallelScrapers(
             all,
             successesWanted,
             limiter,
             tmdbId,
             mediaType,
-            season,
-            episode,
+            tmdbTarget,
+            absoluteTarget,
             payload,
             callback,
         )
@@ -603,6 +604,11 @@ object NuvioClient {
      * lot : dès qu'assez de sources ont réussi (et qu'une VF a été vue s'il y
      * avait une langue explicite), les providers encore en file sont sautés ;
      * ceux déjà en vol terminent pour ne pas perdre une VF.
+     *
+     * Pour les animés longs (One Piece…) ou les séries multi-saisons, chaque scrapeur
+     * reçoit d'abord le format adapté à son type (numérotation absolue S1E1120 pour les
+     * sources animées, saison/épisode S21E35 pour les sources généralistes), avec
+     * bascule automatique en repli en cas de 0 lien.
      */
     private suspend fun runParallelScrapers(
         scrapers: List<NuvioScraper>,
@@ -610,8 +616,8 @@ object NuvioClient {
         limiter: Semaphore,
         tmdbId: Int,
         mediaType: String,
-        season: Int,
-        episode: Int,
+        tmdbTarget: Pair<Int, Int>,
+        absoluteTarget: Pair<Int, Int>,
         payload: PlayPayload,
         callback: (Video) -> Unit,
     ): Boolean = coroutineScope {
@@ -631,8 +637,12 @@ object NuvioClient {
                 if (stopNew.get()) return@async false
                 limiter.withPermit {
                     if (stopNew.get()) return@withPermit false
-                    val ok = runCatching {
-                        runScraper(scraper, tmdbId, mediaType, season, episode, payload) { video ->
+                    val isAnimeScraper = scraper.id in ANIME_FOCUSED_IDS
+                    val (pS, pE) = if (isAnimeScraper) absoluteTarget else tmdbTarget
+                    val (fS, fE) = if (isAnimeScraper) tmdbTarget else absoluteTarget
+
+                    var ok = runCatching {
+                        runScraper(scraper, tmdbId, mediaType, pS, pE, payload) { video ->
                             StreamLabel.languageIn(video.videoTitle)?.let { tag ->
                                 sawExplicitAudio.set(true)
                                 if (tag in setOf("VF", "VFF", "VFQ", "MULTI")) {
@@ -642,6 +652,21 @@ object NuvioClient {
                             callback(video)
                         }
                     }.getOrDefault(false)
+
+                    if (!ok && (pS to pE) != (fS to fE)) {
+                        ok = runCatching {
+                            runScraper(scraper, tmdbId, mediaType, fS, fE, payload) { video ->
+                                StreamLabel.languageIn(video.videoTitle)?.let { tag ->
+                                    sawExplicitAudio.set(true)
+                                    if (tag in setOf("VF", "VFF", "VFQ", "MULTI")) {
+                                        foundFrenchAudio.set(true)
+                                    }
+                                }
+                                callback(video)
+                            }
+                        }.getOrDefault(false)
+                    }
+
                     if (ok) {
                         successes.incrementAndGet()
                         if (enough()) stopNew.set(true)
@@ -1218,10 +1243,11 @@ object NuvioClient {
                 continue
             }
             val found = runCatching {
-                TmdbCatalog.searchBest(title, year)?.let { item ->
+                TmdbCatalog.searchBest(title, year, payload.titles)?.let { item ->
                     val id = item.id.id.toIntOrNull()
                     if (id != null) {
-                        val score = TitleMatch.score(payload.titles, item.title, year, item.year)
+                        val score = item.titles.maxOfOrNull { TitleMatch.score(payload.titles, it, year, item.year) }
+                            ?: 0.0
                         score to id
                     } else {
                         null
@@ -1232,6 +1258,75 @@ object NuvioClient {
             if (found != null && (best == null || found.first > best!!.first)) best = found
         }
         return best?.second
+    }
+
+    private val seasonMapCache = ConcurrentHashMap<Int, List<Pair<Int, Int>>>()
+
+    /**
+     * Pour une série TMDB, retourne la liste des (seasonNumber, episodeCount) pour les saisons >= 1.
+     */
+    private suspend fun seasonCounts(tmdbId: Int): List<Pair<Int, Int>> {
+        seasonMapCache[tmdbId]?.let { return it }
+        val details = TmdbCatalog.details(CatalogId("tmdb", "tv", tmdbId.toString())) ?: return emptyList()
+        val seasons = details.optJSONArray("seasons") ?: return emptyList()
+        val list = (0 until seasons.length()).mapNotNull { i ->
+            val s = seasons.optJSONObject(i) ?: return@mapNotNull null
+            val num = s.optInt("season_number", -1)
+            val count = s.optInt("episode_count", 0)
+            if (num >= 1 && count > 0) num to count else null
+        }.sortedBy { it.first }
+        if (list.isNotEmpty()) seasonMapCache[tmdbId] = list
+        return list
+    }
+
+    /**
+     * Calcule (tmdbSeason, tmdbEpisode) et (1, absoluteEpisode) pour une série.
+     */
+    internal suspend fun resolveEpisodeTargets(
+        tmdbId: Int,
+        season: Int,
+        episode: Int,
+        payload: PlayPayload,
+    ): Pair<Pair<Int, Int>, Pair<Int, Int>> {
+        val direct = season to episode
+        if (!payload.isSeries || episode <= 0) return direct to direct
+
+        val counts = seasonCounts(tmdbId)
+        if (counts.isEmpty()) {
+            val abs = payload.absoluteEpisode ?: episode
+            return direct to (1 to abs)
+        }
+
+        // Si season == 1 et episode > count de saison 1 (ex: One Piece S1E1120)
+        val s1Count = counts.firstOrNull { it.first == 1 }?.second ?: 0
+        if (season == 1 && (episode > s1Count || counts.size > 1)) {
+            val abs = episode
+            var remaining = abs
+            var resolvedSeason = 1
+            var resolvedEpisode = abs
+            for ((sNum, sCount) in counts) {
+                if (remaining <= sCount) {
+                    resolvedSeason = sNum
+                    resolvedEpisode = remaining
+                    break
+                }
+                remaining -= sCount
+            }
+            return (resolvedSeason to resolvedEpisode) to (1 to abs)
+        }
+
+        // Si season > 1 (ex: TMDB One Piece S21E35)
+        if (season > 1) {
+            var totalBefore = 0
+            for ((sNum, sCount) in counts) {
+                if (sNum < season) totalBefore += sCount
+            }
+            val abs = totalBefore + episode
+            return (season to episode) to (1 to abs)
+        }
+
+        val abs = payload.absoluteEpisode ?: episode
+        return (season to episode) to (1 to abs)
     }
 
     /** Format d'erreur autoportant : classe + message + ligne fautive + extrait du code. */
@@ -1304,14 +1399,17 @@ object NuvioClient {
         val id = tmdbId(context.payload) ?: return null
         val replacements = java.util.concurrent.CopyOnWriteArrayList<Video>()
         val mediaType = if (context.payload.isSeries) "tv" else "movie"
-        runScraper(
-            scraper,
-            id,
-            mediaType,
-            if (context.payload.isSeries) context.payload.season ?: 1 else 0,
-            if (context.payload.isSeries) context.payload.episode ?: 1 else 0,
-            context.payload,
-        ) { replacements += it }
+        val season = if (context.payload.isSeries) context.payload.season ?: 1 else 0
+        val episode = if (context.payload.isSeries) context.payload.episode ?: 1 else 0
+        val (tmdbTarget, absoluteTarget) = resolveEpisodeTargets(id, season, episode, context.payload)
+        val isAnime = scraper.id in ANIME_FOCUSED_IDS
+        val (pS, pE) = if (isAnime) absoluteTarget else tmdbTarget
+        val (fS, fE) = if (isAnime) tmdbTarget else absoluteTarget
+
+        var ok = runScraper(scraper, id, mediaType, pS, pE, context.payload) { replacements += it }
+        if (!ok && (pS to pE) != (fS to fE)) {
+            runScraper(scraper, id, mediaType, fS, fE, context.payload) { replacements += it }
+        }
         val language = StreamLabel.languageIn(expired.videoTitle)
         val quality = expired.resolution ?: StreamLabel.parse(expired.videoTitle)?.quality
         return replacements.firstOrNull { candidate ->
@@ -1810,7 +1908,7 @@ object NuvioClient {
 
     // ------------------------------------------------------- préambule JS
 
-    private val JS_ENV = """
+    internal val JS_ENV = """
 var __console_lines = [];
 var console = {
   log:function(x){ try { __console_lines.push(String(x)); if (__console_lines.length > 25) __console_lines.shift(); } catch (e) {} },
@@ -2125,12 +2223,63 @@ function __parseUrl(input, base) {
 // ----- TextEncoder / TextDecoder
 function TextEncoder() {}
 TextEncoder.prototype.encode = function (s) {
-  var str = String(s); var out = [];
+  var str = String(s == null ? '' : s); var out = [];
+  try { str = unescape(encodeURIComponent(str)); } catch (e) {}
   for (var i = 0; i < str.length; i++) out.push(str.charCodeAt(i) & 0xff);
   out.toString = function () { return str; }; return out;
 };
-function TextDecoder() {}
-TextDecoder.prototype.decode = function () { return ''; };
+function TextDecoder(encoding) { this.encoding = encoding || 'utf-8'; }
+TextDecoder.prototype.decode = function (bytes) {
+  if (!bytes) return '';
+  if (typeof bytes === 'string') return bytes;
+  var arr = Array.isArray(bytes) ? bytes : (bytes._d || bytes);
+  if (arr && typeof arr.length === 'number') {
+    var s = '';
+    for (var i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i] & 0xff);
+    try { return decodeURIComponent(escape(s)); } catch (e) { return s; }
+  }
+  return String(bytes || '');
+};
+
+// ----- Object.fromEntries / Object.values / Object.entries
+if (!Object.fromEntries) {
+  Object.fromEntries = function (entries) {
+    if (!entries) return {};
+    var out = {};
+    for (var i = 0; i < entries.length; i++) {
+      var pair = entries[i];
+      if (pair && pair.length >= 2) out[pair[0]] = pair[1];
+    }
+    return out;
+  };
+}
+if (!Object.values) {
+  Object.values = function (o) {
+    var out = [];
+    if (!o) return out;
+    for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) out.push(o[k]);
+    return out;
+  };
+}
+if (!Object.entries) {
+  Object.entries = function (o) {
+    var out = [];
+    if (!o) return out;
+    for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) out.push([k, o[k]]);
+    return out;
+  };
+}
+
+// ----- String.prototype.replaceAll
+if (!String.prototype.replaceAll) {
+  String.prototype.replaceAll = function (search, replacement) {
+    if (search instanceof RegExp) {
+      var flags = search.flags.indexOf('g') >= 0 ? search.flags : search.flags + 'g';
+      return this.replace(new RegExp(search.source, flags), replacement);
+    }
+    return this.split(String(search)).join(String(replacement));
+  };
+}
 
 // ----- require ("util", "https", …)
 function require(name) {
@@ -2234,6 +2383,14 @@ Headers.prototype.forEach = function (fn) { for (var k in this._h) if (this._h.h
 function queueMicrotask(fn) { try { fn(); } catch (e) {} }
 
 // ----- divers
-var crypto = { getRandomValues: function (arr) { return arr; } };
+var crypto = {
+  getRandomValues: function (arr) { return arr; },
+  randomUUID: function () {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+      var r = Math.random() * 16 | 0, v = c === 'x' ? r : ((r & 0x3) | 0x8);
+      return v.toString(16);
+    });
+  }
+};
     """.trimIndent()
 }

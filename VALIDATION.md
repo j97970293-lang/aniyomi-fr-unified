@@ -1,6 +1,16 @@
-# Rapport de validation — FR Unifié 16.11
+# Rapport de validation — FR Unifié 16.12
 
 Date : **8 septembre 2026**
+
+## 16.12 — contrôles réalisés avant publication
+
+La version **16.12 / code 12** apporte :
+- Une interface de classement des sources Nuvio et des langues/qualités aérée et lisible, avec boutons flèches compacts sans padding intrusif et désactivation visuelle aux extrémités ;
+- La correction de la résolution des épisodes récents de One Piece (gestion bidirectionnelle TMDB TV saisons/épisodes ↔ numérotation absolue pour les sources Nuvio animées et généralistes) et de Wistoria (appariement multi-titres TMDB intégrant les titres romaji, originaux japonais et les espaces typographiques français) ;
+- Le décodage UTF-8 systématique des requêtes HTTP/JSON pour préserver les caractères accentués et japonais ;
+- L'enrichissement du runtime JS (`TextDecoder`, `TextEncoder`, `Object.fromEntries`, `Object.values`, `Object.entries`, `String.prototype.replaceAll`, `crypto.randomUUID`).
+
+Nouveaux tests déterministes : `TitleMatchTest` (appariement Wistoria et One Piece, calcul des cibles d'épisodes) et extension de `RhinoRuntimeTest` (tests d'exécution des polyfills JS).
 
 ## 16.11 — contrôles réalisés avant publication
 
