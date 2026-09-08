@@ -24,6 +24,8 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -72,6 +74,9 @@ object NuvioClient {
 
     private val manifestCache = ConcurrentHashMap<String, Pair<Long, List<NuvioScraper>>>()
     private val tmdbCache = ConcurrentHashMap<String, Pair<Long, Int?>>()
+
+    private data class RenewalContext(val scraperId: String, val payload: PlayPayload, val createdAt: Long)
+    private val renewalContexts = ConcurrentHashMap<String, RenewalContext>()
 
     @Volatile private var semaphoreCapacity = NUVIO_CONCURRENCY
 
@@ -857,8 +862,11 @@ object NuvioClient {
                     scope.put("module", scope, module)
                     scope.put("exports", scope, exports)
 
-                    // fetch, b64 et URL sont fournis par Kotlin
-                    scope.put("fetch", scope, FetchFunction())
+                    // Les accès réseau quittent le thread Rhino : les résultats sont réinjectés
+                    // uniquement par la boucle d'événements, ce qui rend Promise.all réellement parallèle.
+                    val asyncFetch = AsyncFetchBridge(scraper.id)
+                    scope.put("__queueFetch", scope, asyncFetch.QueueFunction())
+                    scope.put("__pollFetch", scope, asyncFetch.PollFunction())
                     scope.put("__b64Encode", scope, B64Function(encode = true))
                     scope.put("__b64Decode", scope, B64Function(encode = false))
 
@@ -898,11 +906,14 @@ object NuvioClient {
                         return@rhino false
                     }
 
-                    // Fait avancer les timers et les chaînes de promesses synchrones
-                    var guard = 0
-                    while (timerCount(cx, scope) > 0 && guard++ < 80) {
+                    // Boucle d'événements : Rhino reste mono-thread, tandis que fetch s'exécute sur
+                    // un pool IO. Les vraies échéances setTimeout sont respectées sans bloquer les fetch.
+                    val eventDeadline = System.currentTimeMillis() + SCRAPER_TIMEOUT_MS - 500L
+                    do {
                         drain(cx, scope)
-                    }
+                        if (timerCount(cx, scope) <= 0) break
+                        if (System.currentTimeMillis() < eventDeadline) Thread.sleep(10L)
+                    } while (System.currentTimeMillis() < eventDeadline)
                     drain(cx, scope)
 
                     // Si le résultat est notre promesse, on lit sa valeur
@@ -1129,7 +1140,7 @@ object NuvioClient {
             ),
         ).render()
         val preferred = StreamRanker.isPreferred(title, resolution)
-        return if (kind == "direct") {
+        val video = if (kind == "direct") {
             Video(
                 videoUrl = url!!,
                 videoTitle = title,
@@ -1148,6 +1159,10 @@ object NuvioClient {
                 preferred = preferred,
             )
         }
+        if (kind == "direct") {
+            renewalContexts[video.videoUrl] = RenewalContext(scraper.id, payload, System.currentTimeMillis())
+        }
+        return video
     }
 
     private val TRACKERS = listOf(
@@ -1266,10 +1281,43 @@ object NuvioClient {
             videos.map { video ->
                 async(Dispatchers.IO) {
                     probeLimiter.withPermit {
-                        if (acceptsStream(video)) video else null
+                        if (acceptsStream(video)) video else renewExpired(video)
                     }
                 }
             }.awaitAll().filterNotNull()
+        }
+    }
+
+    /**
+     * Un refus explicite ou une page HTML déclenche le même provider avec le même épisode,
+     * puis choisit uniquement un remplacement de même langue et qualité. Cela évite de
+     * remettre une page d'hébergeur expirée au lecteur ou au gestionnaire de téléchargements.
+     */
+    private suspend fun renewExpired(expired: Video): Video? {
+        val context = renewalContexts[expired.videoUrl] ?: return null
+        if (System.currentTimeMillis() - context.createdAt > 6 * 60 * 60 * 1000L) {
+            renewalContexts.remove(expired.videoUrl)
+            return null
+        }
+        val scraper = scrapers(includeDisabled = true).firstOrNull { it.id.equals(context.scraperId, true) }
+            ?: return null
+        val id = tmdbId(context.payload) ?: return null
+        val replacements = java.util.concurrent.CopyOnWriteArrayList<Video>()
+        val mediaType = if (context.payload.isSeries) "tv" else "movie"
+        runScraper(
+            scraper,
+            id,
+            mediaType,
+            if (context.payload.isSeries) context.payload.season ?: 1 else 0,
+            if (context.payload.isSeries) context.payload.episode ?: 1 else 0,
+            context.payload,
+        ) { replacements += it }
+        val language = StreamLabel.languageIn(expired.videoTitle)
+        val quality = expired.resolution ?: StreamLabel.parse(expired.videoTitle)?.quality
+        return replacements.firstOrNull { candidate ->
+            StreamLabel.languageIn(candidate.videoTitle) == language &&
+                (candidate.resolution ?: StreamLabel.parse(candidate.videoTitle)?.quality) == quality &&
+                acceptsStream(candidate)
         }
     }
 
@@ -1618,6 +1666,71 @@ object NuvioClient {
         val payload: PlayPayload,
     )
 
+    private val fetchExecutor = Executors.newFixedThreadPool(8) { runnable ->
+        Thread(runnable, "frunified-js-fetch").apply { isDaemon = true }
+    }
+
+    /** Pont asynchrone par runtime : aucun objet Rhino ne quitte son thread propriétaire. */
+    private class AsyncFetchBridge(private val scraperId: String) {
+        private data class Completion(val id: Int, val status: Int, val text: String)
+        private val serial = AtomicInteger()
+        private val completions = ConcurrentLinkedQueue<Completion>()
+
+        inner class QueueFunction : BaseFunction() {
+            @Suppress("DEPRECATION")
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any>): Any {
+                val url = args.getOrNull(0)?.toString()?.takeIf { it.startsWith("http") } ?: return -1
+                val opts = args.getOrNull(1) as? Scriptable
+                val method = runCatching {
+                    ScriptableObject.getProperty(opts, "method") as? String
+                }.getOrNull()?.uppercase() ?: "GET"
+                val headers = linkedMapOf<String, String>()
+                if (FrSettings.nuvioUserAgent.isNotBlank()) headers["User-Agent"] = FrSettings.nuvioUserAgent
+                if (FrSettings.nuvioReferer.isNotBlank()) headers["Referer"] = FrSettings.nuvioReferer
+                if (FrSettings.nuvioCookies.isNotBlank()) headers["Cookie"] = FrSettings.nuvioCookies
+                runCatching {
+                    val values = ScriptableObject.getProperty(opts, "headers") as? Scriptable
+                    values?.ids?.forEach { key ->
+                        if (key is String) {
+                            val value = ScriptableObject.getProperty(values, key)?.toString()
+                            if (!value.isNullOrBlank()) headers[key] = value
+                        }
+                    }
+                }
+                val body = runCatching {
+                    ScriptableObject.getProperty(opts, "body").takeUnless {
+                        it == null || it == Scriptable.NOT_FOUND || it is com.frunified.rhino.Undefined
+                    }?.toString()
+                }.getOrNull()
+                val id = serial.incrementAndGet()
+                fetchExecutor.execute {
+                    val started = System.currentTimeMillis()
+                    val (status, text) = doHttp(url, method, headers, body)
+                    val host = runCatching { URL(url).host }.getOrDefault("?")
+                    val list = fetchLog.computeIfAbsent(scraperId) { mutableListOf() }
+                    synchronized(list) {
+                        list.add("$method $host → $status (${System.currentTimeMillis() - started}ms)")
+                        while (list.size > 40) list.removeAt(0)
+                    }
+                    completions.add(Completion(id, status, text))
+                }
+                return id
+            }
+        }
+
+        inner class PollFunction : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any>): Any {
+                val array = JSONArray()
+                while (true) {
+                    val item = completions.poll() ?: break
+                    array.put(JSONObject().put("id", item.id).put("status", item.status).put("text", item.text))
+                }
+                return array.toString()
+            }
+        }
+    }
+
+    /** Ancien pont synchrone conservé pour compatibilité de tests binaires ; le runtime utilise AsyncFetchBridge. */
     private class FetchFunction : BaseFunction() {
         @Suppress("DEPRECATION")
         override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any>): Any? {
@@ -1712,13 +1825,47 @@ var globalThis = this;
 var process = { env: {} };
 var navigator = { userAgent: 'Mozilla/5.0 (Android)' };
 var location = { href: 'https://frunified.fr/', protocol: 'https:', hostname: 'frunified.fr', origin: 'https://frunified.fr' };
-var __timers = [];
-function setTimeout(fn, ms) { __timers.push(fn); return __timers.length; }
-function clearTimeout(id) {}
-function setInterval(fn, ms) { __timers.push(fn); return __timers.length; }
-function clearInterval(id) {}
-function __drain() { while (__timers.length) { var t = __timers.shift(); try { t(); } catch (e) {} } }
-function __timerCount() { return __timers.length; }
+var __timers = [], __timerSerial = 0, __fetchCallbacks = {}, __fetchPending = 0;
+function setTimeout(fn, ms) {
+  var id = ++__timerSerial;
+  __timers.push({ id:id, fn:fn, due:Date.now() + Math.max(0, Number(ms) || 0), interval:0 });
+  return id;
+}
+function clearTimeout(id) { __timers = __timers.filter(function(t){ return t.id !== id; }); }
+function setInterval(fn, ms) {
+  var id = ++__timerSerial, delay = Math.max(1, Number(ms) || 0);
+  __timers.push({ id:id, fn:fn, due:Date.now() + delay, interval:delay });
+  return id;
+}
+function clearInterval(id) { clearTimeout(id); }
+function fetch(url, opts) {
+  return new Promise(function(resolve, reject) {
+    var id = __queueFetch(String(url), opts || {});
+    if (id < 0) { reject(new Error('Invalid URL')); return; }
+    __fetchPending++;
+    __fetchCallbacks[id] = { resolve:resolve, reject:reject };
+  });
+}
+function __drain() {
+  var completed = [];
+  try { completed = JSON.parse(String(__pollFetch())); } catch (e) {}
+  for (var c = 0; c < completed.length; c++) {
+    var item = completed[c], callback = __fetchCallbacks[item.id];
+    if (!callback) continue;
+    delete __fetchCallbacks[item.id]; __fetchPending--;
+    try { callback.resolve(__makeResponse(item.status, item.text)); } catch (e) { callback.reject(e); }
+  }
+  var now = Date.now(), waiting = [];
+  for (var i = 0; i < __timers.length; i++) {
+    var timer = __timers[i];
+    if (timer.due <= now) {
+      try { timer.fn(); } catch (e) {}
+      if (timer.interval > 0) { timer.due = now + timer.interval; waiting.push(timer); }
+    } else waiting.push(timer);
+  }
+  __timers = waiting;
+}
+function __timerCount() { return __timers.length + __fetchPending; }
 
 // ----- Polyfill du patch spread du moteur Rhino embarqué :
 // f(...a) -> f.apply(this, __spread(a)) ; [a, ...b] -> __spread([a], b)

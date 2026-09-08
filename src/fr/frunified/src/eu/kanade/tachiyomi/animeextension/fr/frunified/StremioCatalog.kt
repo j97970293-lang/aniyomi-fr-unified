@@ -293,6 +293,44 @@ object StremioCatalog {
             .filterNotNull()
     }
 
+    data class UpdateReport(
+        val manifests: Int,
+        val succeeded: Int,
+        val failed: Int,
+        val catalogs: Int,
+        val elapsedMs: Long,
+    ) {
+        fun summary(): String =
+            "Manifests : $succeeded/$manifests · échecs : $failed\n" +
+                "Catalogues détectés : $catalogs (${elapsedMs / 1000} s)"
+    }
+
+    /** Force le rechargement parallèle des manifests et de chaque entrée catalogs[]. */
+    suspend fun updateAddons(now: Long = System.currentTimeMillis()): UpdateReport {
+        val started = System.currentTimeMillis()
+        val bases = FrSettings.stremioUrls.filter(FrSettings::isStremioEnabled)
+            .map(StremioClient::base).distinct()
+        bases.forEach(manifestCache::remove)
+        val loaded = coroutineScope {
+            bases.map { base -> async { withTimeoutOrNull(12_000L) { loadAddon(base) } } }.awaitAll()
+        }
+        FrSettings.saveStremioLastUpdate(now)
+        return UpdateReport(
+            manifests = bases.size,
+            succeeded = loaded.count { it != null },
+            failed = loaded.count { it == null },
+            catalogs = loaded.filterNotNull().sumOf { it.catalogs.size },
+            elapsedMs = System.currentTimeMillis() - started,
+        )
+    }
+
+    suspend fun autoUpdateIfDue(now: Long = System.currentTimeMillis()): UpdateReport? {
+        if (!FrSettings.stremioAutoUpdate) return null
+        val last = FrSettings.stremioLastUpdate
+        if (last in 1..now && now - last < FrSettings.DAILY_INTERVAL_MS) return null
+        return updateAddons(now)
+    }
+
     suspend fun catalogs(): List<Catalog> {
         val loaded = addons()
             .filter { "catalog" in it.resources }

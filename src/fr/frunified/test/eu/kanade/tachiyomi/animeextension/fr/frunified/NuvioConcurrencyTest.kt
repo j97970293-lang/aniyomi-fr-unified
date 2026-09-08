@@ -43,6 +43,7 @@ class NuvioConcurrencyTest {
             assertTrue("No provider completed", ok)
             assertTrue("Providers were still executed sequentially", server.maxConcurrentScripts.get() >= 2)
             assertTrue("Concurrent providers did not all report their streams", videos.size >= 2)
+            assertTrue("Promise.all fetch calls were still sequential", server.maxConcurrentFetches.get() >= 2)
         }
     }
 
@@ -65,6 +66,8 @@ class NuvioConcurrencyTest {
         val port: Int get() = socket.localPort
         private val activeScripts = AtomicInteger(0)
         val maxConcurrentScripts = AtomicInteger(0)
+        private val activeFetches = AtomicInteger(0)
+        val maxConcurrentFetches = AtomicInteger(0)
 
         @Volatile private var open = true
 
@@ -77,14 +80,20 @@ class NuvioConcurrencyTest {
               ]
             }
         """.trimIndent()
-        private val script = """
-            module.exports.getStreams = function () {
-              return [{
-                title: "VF 1080p",
-                infoHash: "0123456789abcdef0123456789abcdef01234567"
-              }];
-            };
-        """.trimIndent()
+        private val script: String
+            get() = """
+                module.exports.getStreams = function () {
+                  return Promise.all([
+                    fetch("http://127.0.0.1:$port/data-a").then(function(r) { return r.text(); }),
+                    fetch("http://127.0.0.1:$port/data-b").then(function(r) { return r.text(); })
+                  ]).then(function () {
+                    return [{
+                      title: "VF 1080p",
+                      infoHash: "0123456789abcdef0123456789abcdef01234567"
+                    }];
+                  });
+                };
+            """.trimIndent()
 
         private val acceptor = thread(isDaemon = true, name = "nuvio-concurrency-acceptor") {
             while (open) {
@@ -96,14 +105,24 @@ class NuvioConcurrencyTest {
                         while (!reader.readLine().isNullOrEmpty()) {
                             // Consume HTTP headers.
                         }
-                        val body = if (path == "/manifest.json") {
-                            manifest
-                        } else {
-                            val current = activeScripts.incrementAndGet()
-                            maxConcurrentScripts.updateAndGet { previous -> maxOf(previous, current) }
-                            Thread.sleep(300)
-                            activeScripts.decrementAndGet()
-                            script
+                        val body = when {
+                            path == "/manifest.json" -> manifest
+
+                            path.startsWith("/data-") -> {
+                                val current = activeFetches.incrementAndGet()
+                                maxConcurrentFetches.updateAndGet { previous -> maxOf(previous, current) }
+                                Thread.sleep(250)
+                                activeFetches.decrementAndGet()
+                                "ok"
+                            }
+
+                            else -> {
+                                val current = activeScripts.incrementAndGet()
+                                maxConcurrentScripts.updateAndGet { previous -> maxOf(previous, current) }
+                                Thread.sleep(300)
+                                activeScripts.decrementAndGet()
+                                script
+                            }
                         }
                         val bytes = body.toByteArray(StandardCharsets.UTF_8)
                         it.getOutputStream().buffered().use { output ->

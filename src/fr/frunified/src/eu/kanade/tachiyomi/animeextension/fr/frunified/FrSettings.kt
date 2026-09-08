@@ -5,7 +5,7 @@ import android.content.SharedPreferences
 /** Préférences partagées par les catalogues, Stremio et le moteur Nuvio. */
 object FrSettings {
     const val KEY_SETTINGS_VERSION = "fr_unified_settings_version"
-    const val SETTINGS_VERSION = 7
+    const val SETTINGS_VERSION = 8
 
     /** Serveurs DNS personnalisés (IP, IP:port ou URL DoH, un par ligne). */
     const val KEY_DNS_HOSTS = "dns_hosts"
@@ -24,6 +24,8 @@ object FrSettings {
     const val KEY_STREMIO_CATALOG_CACHE = "stremio_catalog_cache_v5"
     const val KEY_ENGINE_ORDER = "resolver_engine_order"
     const val KEY_STREMIO_MAX = "stremio_max_streams"
+    const val KEY_STREMIO_AUTO_UPDATE = "stremio_auto_update"
+    const val KEY_STREMIO_LAST_UPDATE = "stremio_last_update"
 
     const val KEY_USE_SUBS = "use_subtitles"
     const val KEY_SUB_LANGS = "subtitle_langs"
@@ -43,7 +45,11 @@ object FrSettings {
     const val KEY_NUVIO_AUTO_UPDATE = "nuvio_auto_update"
     const val KEY_NUVIO_LAST_UPDATE = "nuvio_last_update"
     const val KEY_STREAM_ORDER = "stream_order"
+    const val KEY_CUSTOM_QUALITIES = "custom_qualities"
     const val KEY_QUICK_SEARCH = "quick_search"
+    const val KEY_BACKUP_AUTO_RESTORE = "backup_auto_restore"
+    const val KEY_BACKUP_URL = "backup_url"
+    const val KEY_BACKUP_LAST_RESTORE = "backup_last_restore"
     const val KEY_TOKENS = "api_tokens"
     const val KEY_UA = "nuvio_ua"
     const val KEY_REFERER = "nuvio_referer"
@@ -191,8 +197,9 @@ object FrSettings {
     val DEFAULT_NUVIO_PRIORITY = listOf("VF", "VFF", "VFQ", "MULTI", "VOSTFR", "1080", "HD")
 
     /** Tous les critères de flux connus du classement à flèches (langues puis qualités). */
-    val STREAM_CRITERIA: List<String> =
-        StreamLabel.LANGUAGE_ORDER + StreamLabel.QUALITY_VALUES.map(StreamLabel::qualityText)
+    val STREAM_CRITERIA: List<String>
+        get() = StreamLabel.LANGUAGE_ORDER +
+            (customQualities + StreamLabel.QUALITY_VALUES).distinct().sortedDescending().map(StreamLabel::qualityText)
 
     /**
      * Ordre par défaut des critères de flux classés avec les flèches : d'abord les langues
@@ -205,6 +212,7 @@ object FrSettings {
 
     /** Intervalle de rafraîchissement automatique des dépôts et scripts Nuvio (24 h). */
     const val NUVIO_AUTO_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000L
+    const val DAILY_INTERVAL_MS = 24 * 60 * 60 * 1000L
 
     @Volatile
     private var prefs: SharedPreferences? = null
@@ -276,6 +284,9 @@ object FrSettings {
             .takeIf { it == "nuvio_first" || it == "stremio_first" } ?: "nuvio_first"
     val stremioMaxStreams: Int
         get() = string(KEY_STREMIO_MAX, "8").toIntOrNull()?.coerceIn(0, 100) ?: 8
+    val stremioAutoUpdate: Boolean get() = bool(KEY_STREMIO_AUTO_UPDATE, true)
+    val stremioLastUpdate: Long get() = long(KEY_STREMIO_LAST_UPDATE)
+    internal fun saveStremioLastUpdate(timestamp: Long) = saveLong(KEY_STREMIO_LAST_UPDATE, timestamp)
 
     val useSubtitles: Boolean get() = bool(KEY_USE_SUBS, true)
     val subtitleLangs: List<String>
@@ -325,8 +336,16 @@ object FrSettings {
             else -> 0L
         }
 
-    internal fun saveNuvioLastUpdate(timestamp: Long) {
-        runCatching { prefs?.edit()?.putLong(KEY_NUVIO_LAST_UPDATE, timestamp)?.apply() }
+    internal fun saveNuvioLastUpdate(timestamp: Long) = saveLong(KEY_NUVIO_LAST_UPDATE, timestamp)
+
+    private fun long(key: String): Long = when (val value = any(key)) {
+        is Number -> value.toLong()
+        is String -> value.toLongOrNull() ?: 0L
+        else -> 0L
+    }
+
+    private fun saveLong(key: String, timestamp: Long) {
+        runCatching { prefs?.edit()?.putLong(key, timestamp)?.apply() }
     }
 
     /**
@@ -334,6 +353,14 @@ object FrSettings {
      * borne chaque appel, au lieu d'attendre Jikan et l'ensemble des addons Stremio.
      */
     val quickSearch: Boolean get() = bool(KEY_QUICK_SEARCH, false)
+
+    val customQualities: List<Int>
+        get() = string(KEY_CUSTOM_QUALITIES, "").split(Regex("[,\\n; ]+"))
+            .mapNotNull(StreamLabel::qualityValue).filter { it in 144..8640 }.distinct()
+    val backupAutoRestore: Boolean get() = bool(KEY_BACKUP_AUTO_RESTORE, false)
+    val backupUrl: String get() = string(KEY_BACKUP_URL, "").trim()
+    val backupLastRestore: Long get() = long(KEY_BACKUP_LAST_RESTORE)
+    internal fun saveBackupLastRestore(timestamp: Long) = saveLong(KEY_BACKUP_LAST_RESTORE, timestamp)
 
     /**
      * Critères de flux classés avec les flèches (langues et qualités mélangées, du plus

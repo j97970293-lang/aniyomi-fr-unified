@@ -1,6 +1,8 @@
 package eu.kanade.tachiyomi.animeextension.fr.frunified
 
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.SharedPreferences
 import android.text.InputType
@@ -169,6 +171,14 @@ class FrUnified : Source() {
                     editor.putBoolean(FrSettings.KEY_QUICK_SEARCH, false)
                 }
             }
+            if (version < 8) {
+                if (!all.containsKey(FrSettings.KEY_STREMIO_AUTO_UPDATE)) {
+                    editor.putBoolean(FrSettings.KEY_STREMIO_AUTO_UPDATE, true)
+                }
+                if (!all.containsKey(FrSettings.KEY_BACKUP_AUTO_RESTORE)) {
+                    editor.putBoolean(FrSettings.KEY_BACKUP_AUTO_RESTORE, false)
+                }
+            }
             editor.putInt(FrSettings.KEY_SETTINGS_VERSION, FrSettings.SETTINGS_VERSION)
             editor.apply()
         }
@@ -186,8 +196,12 @@ class FrUnified : Source() {
         FrRuntime.init(client)
         NuvioClient.init(context)
         settingsScope.launch {
-            // Précharge et met en cache chaque entrée catalogs[] des manifests actifs.
-            runCatching { StremioCatalog.catalogs() }
+            // Mise à jour quotidienne des manifests et catalogues Stremio.
+            runCatching { StremioCatalog.autoUpdateIfDue() }
+        }
+        settingsScope.launch {
+            // Restauration distante optionnelle, HTTPS et au plus quotidienne.
+            runCatching { SettingsBackup.autoRestoreIfDue(preferences) }
         }
         settingsScope.launch {
             // Mise à jour automatique (au plus quotidienne) des dépôts et scripts Nuvio.
@@ -1409,6 +1423,17 @@ class FrUnified : Source() {
             "Ajouter un addon Stremio",
             "Accepte un manifest d'addon (flux, catalogue, meta ou sous-titres).",
         ) { showExternalSourceDialog(context, ExternalSourceImporter.Kind.STREMIO) }
+        switch(
+            FrSettings.KEY_STREMIO_AUTO_UPDATE,
+            true,
+            "Mise à jour automatique quotidienne",
+            "Recharge les manifests et leurs catalogues une fois par jour.",
+        )
+        action(
+            "action_stremio_update",
+            "Mettre à jour les addons maintenant",
+            "Force le rechargement des manifests et affiche un bilan.",
+        ) { runStremioUpdate(context) }
         list(
             FrSettings.KEY_STREMIO_MAX,
             "8",
@@ -1426,6 +1451,11 @@ class FrUnified : Source() {
         )
 
         header("🌐 5 · RÉSEAU — DNS personnalisé")
+        action(
+            "action_dns_presets",
+            "Préréglages DNS en un clic",
+            "Cloudflare, Google, Quad9, AdGuard, téléphone ou personnalisé.",
+        ) { showDnsPresetDialog(context) }
         edit(
             FrSettings.KEY_DNS_HOSTS,
             "",
@@ -1438,6 +1468,7 @@ class FrUnified : Source() {
             "Tester la résolution DNS",
             "Vérifie les domaines (catalogues, dépôts, sources) en DoH puis UDP.",
         ) { showDnsTestDialog(context) }
+        header("🛠️ 6 · AVANCÉ (en-têtes et clés)")
         edit(
             FrSettings.KEY_TOKENS,
             "",
@@ -1465,7 +1496,32 @@ class FrUnified : Source() {
             "Cookies pour les domaines protégés.",
         )
 
-        header("ℹ️ 6 · AIDE")
+        header("💾 7 · SAUVEGARDE ET RESTAURATION")
+        action(
+            "action_backup_export",
+            "Créer une sauvegarde",
+            "Copie tous les réglages dans le presse-papiers au format JSON.",
+        ) { exportBackup(context) }
+        action(
+            "action_backup_restore",
+            "Restaurer une sauvegarde",
+            "Collez le JSON créé par FR Unifié ; les caches ne sont pas importés.",
+        ) { showBackupRestoreDialog(context) }
+        edit(
+            FrSettings.KEY_BACKUP_URL,
+            "",
+            "Lien HTTPS du backup",
+            "Lien direct vers un JSON de sauvegarde (GitHub Gist brut, serveur personnel…).",
+            multiline = false,
+        )
+        switch(
+            FrSettings.KEY_BACKUP_AUTO_RESTORE,
+            false,
+            "Restaurer automatiquement depuis le lien",
+            "Vérifie le lien au lancement, au plus une fois par jour. Désactivé par défaut.",
+        )
+
+        header("ℹ️ 8 · AIDE")
         action(
             "action_guide",
             "Guide des réglages",
@@ -1529,6 +1585,32 @@ class FrUnified : Source() {
             .show()
     }
 
+    private fun showDnsPresetDialog(dialogContext: Context) {
+        val labels = arrayOf(
+            "☁️ Cloudflare — 1.1.1.1",
+            "🔎 Google — 8.8.8.8",
+            "🛡️ Quad9 — 9.9.9.9",
+            "🚫 AdGuard — 94.140.14.14",
+            "📱 Téléphone — DNS du système",
+            "✏️ Personnalisé",
+        )
+        val values = arrayOf("1.1.1.1", "8.8.8.8", "9.9.9.9", "94.140.14.14", "", null)
+        AlertDialog.Builder(dialogContext)
+            .setTitle("Choisir le DNS")
+            .setItems(labels) { _, index ->
+                val value = values[index]
+                if (value == null) {
+                    editDnsFromContext(dialogContext)
+                } else {
+                    preferences.edit().putString(FrSettings.KEY_DNS_HOSTS, value).commit()
+                    FrDns.clearCache()
+                    displayToast(if (value.isBlank()) "DNS du téléphone activé" else "DNS activé : $value")
+                }
+            }
+            .setNegativeButton("Annuler", null)
+            .show()
+    }
+
     private fun showDnsTestDialog(dialogContext: Context) {
         displayToast("Test DNS en cours…", Toast.LENGTH_LONG)
         settingsScope.launch {
@@ -1545,8 +1627,30 @@ class FrUnified : Source() {
             val configured = FrSettings.dnsHosts.joinToString(", ").ifBlank { "aucun (DNS du système)" }
             val report = buildString {
                 appendLine("DNS configuré : $configured")
-                appendLine("Ordre : DoH (HTTPS) → UDP 53 → DNS du système.")
+                appendLine("Ordre réel : DoH (HTTPS) → UDP 53 → DNS du système.")
+                if (FrSettings.dnsHosts.isNotEmpty()) {
+                    appendLine()
+                    appendLine("Détail des chemins vers api.themoviedb.org :")
+                    FrSettings.dnsHosts.forEach { server ->
+                        val path = FrDns.testPath(server, "api.themoviedb.org")
+                        val doh = path.dohAddresses.joinToString().ifBlank { "échec" }
+                        val udp = if (server.startsWith(
+                                "http",
+                            )
+                        ) {
+                            "non applicable"
+                        } else {
+                            path.udpAddresses.joinToString().ifBlank {
+                                "échec"
+                            }
+                        }
+                        appendLine("• $server")
+                        appendLine("  HTTPS/DoH ${path.dohEndpoint ?: "—"} → $doh (${path.dohMs} ms)")
+                        appendLine("  UDP/53 → $udp (${path.udpMs} ms)")
+                    }
+                }
                 appendLine()
+                appendLine("Résolution finale (avec replis) :")
                 hosts.forEach { host ->
                     val custom = runCatching {
                         val started = System.currentTimeMillis()
@@ -1891,8 +1995,8 @@ class FrUnified : Source() {
         }
 
         fun render() {
-            if (container.childCount > 1) {
-                container.removeViews(1, container.childCount - 1)
+            if (container.childCount > 2) {
+                container.removeViews(2, container.childCount - 2)
             }
             ordered.forEachIndexed { index, criterion ->
                 val isLanguage = criterion in StreamLabel.LANGUAGE_ORDER
@@ -1926,6 +2030,38 @@ class FrUnified : Source() {
                 container.addView(row)
             }
         }
+        val addQuality = Button(dialogContext).apply {
+            text = "+ Qualité"
+            contentDescription = "Ajouter une résolution personnalisée"
+            setOnClickListener {
+                val input = EditText(dialogContext).apply {
+                    hint = "540p, 2160p, 8K…"
+                    inputType = InputType.TYPE_CLASS_TEXT
+                }
+                AlertDialog.Builder(dialogContext)
+                    .setTitle("Ajouter une qualité")
+                    .setMessage("Saisissez une résolution verticale entre 144p et 8640p.")
+                    .setView(input)
+                    .setNegativeButton("Annuler", null)
+                    .setPositiveButton("Ajouter") { _, _ ->
+                        val quality = StreamLabel.qualityValue(input.text.toString())
+                        if (quality == null || quality !in 144..8640) {
+                            displayToast("Résolution non reconnue")
+                        } else {
+                            val token = StreamLabel.qualityText(quality)
+                            if (token !in ordered) ordered.add(token)
+                            val customs = (FrSettings.customQualities + quality).distinct().sortedDescending()
+                            preferences.edit()
+                                .putString(FrSettings.KEY_CUSTOM_QUALITIES, customs.joinToString("\n") { "${it}p" })
+                                .putString(FrSettings.KEY_STREAM_ORDER, ordered.joinToString("\n"))
+                                .commit()
+                            render()
+                        }
+                    }
+                    .show()
+            }
+        }
+        container.addView(addQuality, 1)
         render()
 
         val dialog = AlertDialog.Builder(dialogContext)
@@ -1948,6 +2084,59 @@ class FrUnified : Source() {
             }
         }
         runCatching { dialog.show() }
+    }
+
+    private fun exportBackup(dialogContext: Context) {
+        val json = SettingsBackup.export(preferences)
+        val clipboard = dialogContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.setPrimaryClip(ClipData.newPlainText("FR Unifié — sauvegarde", json))
+        AlertDialog.Builder(dialogContext)
+            .setTitle("Sauvegarde copiée")
+            .setMessage(
+                "${preferences.all.size} réglages copiés dans le presse-papiers. Conservez ce JSON dans un endroit sûr.",
+            )
+            .setPositiveButton("Fermer", null)
+            .show()
+    }
+
+    private fun showBackupRestoreDialog(dialogContext: Context) {
+        val input = EditText(dialogContext).apply {
+            hint = "Collez ici le JSON de sauvegarde"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 8
+        }
+        AlertDialog.Builder(dialogContext)
+            .setTitle("Restaurer une sauvegarde")
+            .setMessage("Les réglages présents dans le JSON seront remplacés. Redémarrez ensuite l'extension.")
+            .setView(input)
+            .setNegativeButton("Annuler", null)
+            .setPositiveButton("Restaurer") { _, _ ->
+                val result = runCatching { SettingsBackup.restore(preferences, input.text.toString()) }
+                displayToast(
+                    result.fold({ "$it réglage(s) restauré(s)" }, { "Échec : ${it.message?.take(100)}" }),
+                    Toast.LENGTH_LONG,
+                )
+            }
+            .show()
+    }
+
+    private fun runStremioUpdate(dialogContext: Context) {
+        displayToast("Mise à jour Stremio en cours…", Toast.LENGTH_LONG)
+        settingsScope.launch {
+            val report = runCatching { StremioCatalog.updateAddons() }
+            handler.post {
+                AlertDialog.Builder(dialogContext)
+                    .setTitle(if (report.isSuccess) "Addons Stremio à jour" else "Mise à jour impossible")
+                    .setMessage(
+                        report.map(StremioCatalog.UpdateReport::summary).getOrElse {
+                            it.message
+                                ?: "Erreur inconnue"
+                        },
+                    )
+                    .setPositiveButton("Fermer", null)
+                    .show()
+            }
+        }
     }
 
     /** Relecture immédiate des dépôts Nuvio et rafraîchissement de tous les scripts. */
@@ -2061,7 +2250,14 @@ class FrUnified : Source() {
         val choices = FrSettings.stremioUrls.distinct().map { addon ->
             val clean = StremioClient.base(addon)
             val display = clean.substringAfter("://").removeSuffix("/manifest.json").take(90)
-            SourceChoice(display, clean, FrSettings.isStremioEnabled(clean))
+            val locale = Regex("/[a-z]{2}-[A-Z]{2}(?:/|$)").find("$clean/")?.value?.trim('/')
+            val flag = locale?.let { FrSettings.flagForLanguages(listOf(it)) } ?: "🌐"
+            val recommended = if (FrSettings.DEFAULT_STREMIO_ADDONS.any { StremioClient.base(it) == clean }) {
+                " ★ conseillée"
+            } else {
+                ""
+            }
+            SourceChoice("$flag $display$recommended", clean, FrSettings.isStremioEnabled(clean))
         }
         if (choices.isEmpty()) {
             displayToast("Aucun addon Stremio configuré", Toast.LENGTH_LONG)
