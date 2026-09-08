@@ -1,4 +1,24 @@
-# Rapport de validation — FR Unifié 16.7
+# Rapport de validation — FR Unifié 16.9
+
+Date : **8 septembre 2026**
+
+## 16.9 — contrôles réalisés avant publication
+
+La version **16.9 / code 9** a été préparée sans accès à Maven Central ni au SDK Android depuis l’environnement de travail ; les contrôles ci-dessous ont donc été exécutés avec le compilateur Kotlin 2.2.0 et ktlint 1.7.1 autonomes, contre des doublures minimales des API Android/Aniyomi. La compilation Gradle complète, le lint Android et la signature de l’APK sont assurés par les workflows GitHub (`build.yml` sur la pull request, `publish.yml` sur le tag `v16.9`).
+
+| Contrôle | Résultat |
+|---|---|
+| ktlint 1.7.1 (mêmes règles que Spotless) sur `src/**` et `test/**` | Réussi, 0 violation |
+| Compilation Kotlin 2.2.0 des sources de l’extension (options `-Xcontext-parameters`, `-Xmulti-dollar-interpolation`, `-Xjvm-default=all-compatibility`) | Réussie, 0 erreur ; le même harnais reproduit l’erreur réelle de compilation corrigée en 16.8, il détecte donc les erreurs sémantiques |
+| Suite JVM reproductible (21 classes, 44 tests déclarés) exécutée avec un lanceur minimal | **33/33 tests exécutés réussis**, 11 sondes réseau opt-in ignorées, 0 échec |
+| Scénario de bout en bout Nuvio : manifest et bundle servis par un serveur HTTP local, exécution Rhino, conversion en flux, regroupement des serveurs, `updateSources()` puis `autoUpdateIfDue()` | Réussi : titres `(VF) 1080p · flemmix · Nuvio · Uqload`, serveur `Nuvio · flemmix : VF, VOSTFR`, bilan « Dépôts relus : 1 · sources actives : 2 · scripts mis à jour : 2 » |
+| Scénario Stremio : flux HTTP, torrent et lecteur sans langue | Réussi : `(VF) 1080p · … · Stremio · Frenchstream UQLOAD`, `(MULTI) 4K · … · Torrent …`, un lecteur sans langue reste non préféré |
+
+Nouveaux tests déterministes : `StreamLabelTest` (rendu/analyse des titres, détection des langues et qualités, détail sans redite, noms de serveurs) et `StreamRankerTest` (ordre par défaut, ordre à flèches, anciens titres, ordre des serveurs, lecture et migration du réglage). Les tests existants restent verts après la refonte des titres (`StremioParserTest`, `StremioHosterTest`, `NuvioLanguageRuntimeTest`, `FrSettingsTest`…).
+
+Points non couverts localement et à confirmer sur l’appareil : l’affichage de la boîte de dialogue à flèches (vue construite par code), le déclenchement de la mise à jour automatique au lancement (une fois par 24 h) et la lisibilité des titres dans le lecteur Aniyomi.
+
+## 16.7 — rapport d’origine
 
 Date : **6 septembre 2026**
 

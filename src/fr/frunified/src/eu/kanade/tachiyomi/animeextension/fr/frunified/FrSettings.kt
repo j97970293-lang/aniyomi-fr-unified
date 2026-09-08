@@ -5,7 +5,7 @@ import android.content.SharedPreferences
 /** Préférences partagées par les catalogues, Stremio et le moteur Nuvio. */
 object FrSettings {
     const val KEY_SETTINGS_VERSION = "fr_unified_settings_version"
-    const val SETTINGS_VERSION = 6
+    const val SETTINGS_VERSION = 7
 
     /** DNS UDP personnalisés (un par ligne) utilisés par tout le réseau de l'extension. */
     const val KEY_DNS_HOSTS = "dns_hosts"
@@ -36,10 +36,14 @@ object FrSettings {
     const val KEY_NUVIO_LANGUAGES = "nuvio_languages"
     const val KEY_NUVIO_REPOS_DISABLED = "nuvio_repos_disabled"
     const val KEY_NUVIO_MAX = "nuvio_max_per_scraper"
-    const val KEY_NUVIO_PRIORITY = "nuvio_priority_patterns"
+    const val KEY_NUVIO_PRIORITY = "nuvio_priority_patterns" // migration vers KEY_STREAM_ORDER (16.9)
     const val KEY_NUVIO_ORDER = "nuvio_order"
     const val KEY_NUVIO_CONCURRENCY = "nuvio_concurrency"
     const val KEY_NUVIO_SEARCH_MODE = "nuvio_search_mode"
+    const val KEY_NUVIO_AUTO_UPDATE = "nuvio_auto_update"
+    const val KEY_NUVIO_LAST_UPDATE = "nuvio_last_update"
+    const val KEY_STREAM_ORDER = "stream_order"
+    const val KEY_QUICK_SEARCH = "quick_search"
     const val KEY_TOKENS = "api_tokens"
     const val KEY_UA = "nuvio_ua"
     const val KEY_REFERER = "nuvio_referer"
@@ -186,6 +190,22 @@ object FrSettings {
     val DEFAULT_NUVIO_DISABLED: Set<String> = GOWARU_NUVIO_IDS - RECOMMENDED_NUVIO_IDS.toSet()
     val DEFAULT_NUVIO_PRIORITY = listOf("VF", "VFF", "VFQ", "MULTI", "VOSTFR", "1080", "HD")
 
+    /** Tous les critères de flux connus du classement à flèches (langues puis qualités). */
+    val STREAM_CRITERIA: List<String> =
+        StreamLabel.LANGUAGE_ORDER + StreamLabel.QUALITY_VALUES.map(StreamLabel::qualityText)
+
+    /**
+     * Ordre par défaut des critères de flux classés avec les flèches : d'abord les langues
+     * (VF avant VOSTFR), puis les qualités (1080p avant 4K, plus léger sur mobile, puis 720p).
+     */
+    val DEFAULT_STREAM_ORDER = listOf(
+        "VF", "VFF", "VFQ", "MULTI", "VOSTFR", "VO",
+        "1080p", "4K", "1440p", "720p", "480p", "360p",
+    )
+
+    /** Intervalle de rafraîchissement automatique des dépôts et scripts Nuvio (24 h). */
+    const val NUVIO_AUTO_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000L
+
     @Volatile
     private var prefs: SharedPreferences? = null
 
@@ -287,9 +307,6 @@ object FrSettings {
             .ifEmpty { setOf("fr") }
     val nuvioMaxPerScraper: Int
         get() = string(KEY_NUVIO_MAX, "4").toIntOrNull()?.coerceIn(0, 200) ?: 4
-    val nuvioPriorityPatterns: List<String>
-        get() = string(KEY_NUVIO_PRIORITY, DEFAULT_NUVIO_PRIORITY.joinToString(","))
-            .split(',').map { it.trim().uppercase() }.filter { it.isNotBlank() }
     val nuvioOrder: List<String>
         get() = string(KEY_NUVIO_ORDER, RECOMMENDED_NUVIO_IDS.joinToString("\n"))
             .lineSequence().map(String::trim).filter(String::isNotBlank).toList()
@@ -298,6 +315,57 @@ object FrSettings {
     val nuvioSearchMode: String
         get() = string(KEY_NUVIO_SEARCH_MODE, "fast").takeIf { it in setOf("fast", "balanced", "complete") }
             ?: "fast"
+
+    /** Mise à jour automatique (quotidienne) des manifests et scripts Nuvio. */
+    val nuvioAutoUpdate: Boolean get() = bool(KEY_NUVIO_AUTO_UPDATE, true)
+    val nuvioLastUpdate: Long
+        get() = when (val value = any(KEY_NUVIO_LAST_UPDATE)) {
+            is Number -> value.toLong()
+            is String -> value.toLongOrNull() ?: 0L
+            else -> 0L
+        }
+
+    internal fun saveNuvioLastUpdate(timestamp: Long) {
+        runCatching { prefs?.edit()?.putLong(KEY_NUVIO_LAST_UPDATE, timestamp)?.apply() }
+    }
+
+    /**
+     * Recherche rapide : n'interroge que les catalogues rapides (TMDB et AniList) et
+     * borne chaque appel, au lieu d'attendre Jikan et l'ensemble des addons Stremio.
+     */
+    val quickSearch: Boolean get() = bool(KEY_QUICK_SEARCH, false)
+
+    /**
+     * Critères de flux classés avec les flèches (langues et qualités mélangées, du plus
+     * au moins souhaité). Les entrées inconnues sont ignorées ; une liste vide ou absente
+     * retombe sur [DEFAULT_STREAM_ORDER].
+     */
+    val streamOrder: List<String>
+        get() = parseStreamOrder(string(KEY_STREAM_ORDER, "")).ifEmpty { DEFAULT_STREAM_ORDER }
+
+    /** Normalise une liste de critères saisie ou enregistrée (`vf, 1080P, 4k` → `VF, 1080p, 4K`). */
+    internal fun parseStreamOrder(raw: String): List<String> = raw
+        .split(Regex("[,\\n;]"))
+        .map(String::trim)
+        .filter(String::isNotBlank)
+        .mapNotNull { token ->
+            StreamLabel.qualityValue(token)?.let(StreamLabel::qualityText)
+                ?: token.uppercase().takeIf { it in StreamLabel.LANGUAGE_ORDER }
+        }
+        .distinct()
+
+    /**
+     * Convertit les anciens « motifs de priorité » (16.8 et antérieures) en ordre de critères.
+     * Retourne `null` lorsque l'utilisateur n'avait rien personnalisé : le nouvel ordre par
+     * défaut s'applique alors.
+     */
+    internal fun streamOrderFromLegacyPatterns(raw: String?): List<String>? {
+        val patterns = raw?.split(',')?.map { it.trim().uppercase() }?.filter(String::isNotBlank) ?: return null
+        if (patterns.isEmpty() || patterns == DEFAULT_NUVIO_PRIORITY) return null
+        val mapped = parseStreamOrder(patterns.joinToString(","))
+        if (mapped.isEmpty()) return null
+        return (mapped + DEFAULT_STREAM_ORDER).distinct()
+    }
     val nuvioUserAgent: String get() = string(KEY_UA, DEFAULT_USER_AGENT).trim()
     val nuvioReferer: String get() = string(KEY_REFERER, "https://www.google.com/").trim()
     val nuvioCookies: String get() = string(KEY_COOKIES, "").trim()

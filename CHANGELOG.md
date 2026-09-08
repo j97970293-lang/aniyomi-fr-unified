@@ -1,5 +1,17 @@
 # Journal des modifications
 
+## 16.9 — 8 septembre 2026
+
+- **titres de flux lisibles et homogènes** pour Nuvio comme pour Stremio : `(VF) 1080p · flemmix · Nuvio · Uqload` — langue, qualité, source, moteur puis détail utile ; le détail ne répète plus le titre de l’œuvre ni les étiquettes déjà affichées ;
+- **serveurs regroupés par moteur et par source** avec leurs langues annoncées : `Nuvio · flemmix : VF, VOSTFR`, `Stremio · French Streaming Providers` ; les serveurs Stremio chargés à la demande conservent ce nom ;
+- **classement des langues et des qualités à l’aide de flèches** (nouveau réglage « Classer langues et qualités avec les flèches ») : un seul ordre mélangeant VF, VFF, VFQ, MULTI, VOSTFR, VO, 1080p, 4K, 1440p, 720p, 480p et 360p ; le premier critère satisfait décide, le suivant départage (une VF 720p passe avant une VOSTFR 1080p, une VF 1080p avant une VF 720p) ; les anciens « motifs de priorité » personnalisés sont convertis automatiquement, la valeur par défaut est remplacée ;
+- le flux marqué **préféré** pour la lecture automatique d’Aniyomi est désormais le premier flux satisfaisant au moins un critère de l’ordre choisi ; les libellés d’addons ou de lecteurs ne sont plus confondus avec une langue ;
+- **recherche rapide** (réglage désactivé par défaut) : n’interroge que TMDB et AniList, chaque appel borné à 6 secondes, sans repli Jikan ni addons Stremio en onglet mixte ;
+- **recherche TMDB sans année en repli** : lorsqu’aucun résultat ne correspond au titre et à l’année, la même recherche est relancée sans année avant d’abandonner (identifiants TMDB pour Nuvio et fiches TMDB) ;
+- **mise à jour automatique des sources Nuvio** : une fois par jour au lancement, les dépôts activés sont relus et les scripts modifiés retéléchargés (`If-Modified-Since`, écriture seulement si le contenu change) ; désactivable, avec action « Mettre à jour les sources maintenant » et bilan chiffré (dépôts, sources, scripts mis à jour / inchangés / en échec) ;
+- langue déduite de la déclaration du provider lorsque le flux n’en indique aucune (provider turc → `TR`), sans jamais deviner VF ou VOSTFR pour un provider français ;
+- migration des réglages en version 7 ; nouveaux tests JVM `StreamLabelTest` et `StreamRankerTest`.
+
 ## 16.8 — 7 septembre 2026
 
 - classement des sources Nuvio à l’aide de flèches (tout en haut, monter, descendre, tout en bas) avec enregistrement immédiat ; le champ texte de l’ordre reste disponible pour les cas avancés ;

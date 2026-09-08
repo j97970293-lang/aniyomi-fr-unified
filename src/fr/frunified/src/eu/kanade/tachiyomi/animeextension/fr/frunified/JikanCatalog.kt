@@ -142,17 +142,24 @@ object AnimeCatalog {
         }
     }
 
-    suspend fun search(query: String, page: Int): List<CatalogItem> {
+    /**
+     * Recherche d'animés : AniList, puis Jikan, puis TMDB en repli.
+     * En [quick] (recherche rapide), les replis Jikan et TMDB sont sautés : AniList répond
+     * en une requête, alors que Jikan est limité en débit et TMDB filtre après coup.
+     */
+    suspend fun search(query: String, page: Int, quick: Boolean = false): List<CatalogItem> {
         val aniList = if (FrSettings.useAniListCatalog) {
             runCatching { AniListCatalog.search(query, page) }.getOrDefault(emptyList())
         } else {
             emptyList()
         }
+        if (quick && FrSettings.useAniListCatalog) return aniList
         val jikan = if (aniList.isEmpty() && FrSettings.useJikanCatalog) {
             runCatching { JikanCatalog.search(query, page) }.getOrDefault(emptyList())
         } else {
             aniList
         }
+        if (quick) return jikan
         return if (jikan.isEmpty() && FrSettings.useTmdbCatalog) {
             runCatching { TmdbCatalog.animeSearch(query, page) }.getOrDefault(emptyList())
         } else {

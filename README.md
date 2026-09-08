@@ -1,6 +1,6 @@
 # FR Unifié pour Aniyomi
 
-**FR Unifié 16.8** est une extension Aniyomi autonome qui réunit catalogues, fiches, épisodes et sources de lecture dans une seule interface.
+**FR Unifié 16.9** est une extension Aniyomi autonome qui réunit catalogues, fiches, épisodes et sources de lecture dans une seule interface.
 
 ## Fonctions principales
 
@@ -14,12 +14,15 @@
 - **classement des sources à l’aide de flèches** (haut, bas, monter, descendre) au lieu de la saisie manuelle, et drapeaux de langue affichés dans tous les sélecteurs ;
 - **organisation des saisons réglable** : classique (fiche → saisons → épisodes), fusionnée (une seule fiche avec toutes les saisons) ou séparée (une fiche « Titre — Saison N » dès le catalogue) ;
 - langues de catalogue et de providers configurables ;
-- titres de flux indiquant autant que possible la langue (VF, VFF, VFQ, MULTI, VOSTFR), le lecteur et la qualité ;
+- **titres de flux lisibles** au format `(VF) 1080p · flemmix · Nuvio · Uqload` (langue, qualité, source, moteur, détail) et serveurs regroupés `Nuvio · flemmix : VF, VOSTFR` / `Stremio · addon` ;
+- **classement des langues et des qualités à l’aide de flèches** : un seul ordre (VF, VFF, VFQ, MULTI, VOSTFR, VO, 1080p, 4K, 1440p, 720p…) qui décide de l’ordre des flux et du flux lu automatiquement ;
+- **recherche rapide** facultative (TMDB + AniList, 6 s par appel) et repli TMDB sans année ;
+- **mise à jour automatique quotidienne des sources Nuvio**, avec action manuelle et bilan chiffré ;
 - transmission des en-têtes HTTP nécessaires au lecteur ;
 - contrôle léger des flux avant lecture et rejet des refus HTTP explicites, notamment les 403 ; **détection des pages HTML/popups** téléchargées à la place de la vidéo (FrenchStream et autres) ;
 - **DNS personnalisé de l’extension** (UDP, un serveur par ligne) lorsque le DNS de l’appareil ne résout pas certains sites ;
 - sous-titres externes Stremio/OpenSubtitles ;
-- réglages avancés conservés : ordre des providers, motifs de priorité, concurrence, clés API, User-Agent, Referer et cookies.
+- réglages avancés conservés : ordre des providers, ordre des critères en texte, concurrence, clés API, User-Agent, Referer et cookies.
 
 CloudStream n’est plus intégré : les fichiers `.cs3` et les `repo.json` sont refusés. Utilisez un manifest **Nuvio** ou **Stremio** directement exécutable.
 
@@ -80,6 +83,25 @@ Une fois l’import confirmé, ouvrez **Nuvio → choisir les sources** : les **
 
 Les bundles internationaux utilisent parfois des fonctions Node ou des sites qui changent sans préavis. Le moteur apporte des polyfills Rhino, abaisse les boucles `for…of` et corrige plusieurs incompatibilités de portée, mais la disponibilité d’un provider tiers n’est jamais garantie.
 
+## Flux, langues et qualités (16.9)
+
+Chaque flux est présenté de la même façon, quel que soit le moteur :
+
+```text
+(VF) 1080p · flemmix · Nuvio · Uqload
+(VOSTFR) 720p · French Streaming Providers · Stremio · Vidmoly
+```
+
+La langue entre parenthèses et la qualité viennent en tête, puis la source (provider Nuvio ou addon Stremio), le moteur et un détail court (lecteur, release). Les serveurs sont regroupés par moteur et par source, avec les langues qu’ils proposent : `Nuvio · flemmix : VF, VOSTFR`.
+
+Le réglage **Lecture → Classer langues et qualités avec les flèches** remplace les anciens motifs de priorité. Un seul ordre mélange langues et qualités ; par défaut :
+
+```text
+VF, VFF, VFQ, MULTI, VOSTFR, VO, 1080p, 4K, 1440p, 720p, 480p, 360p
+```
+
+Le premier critère satisfait par un flux décide de sa place, le suivant départage : une VF 720p passe avant une VOSTFR 1080p, une VF 1080p avant une VF 720p. Pour privilégier la qualité, montez `1080p` ou `4K` au-dessus des langues. Le premier flux satisfaisant au moins un critère est marqué « préféré » et lancé automatiquement par Aniyomi. Les motifs personnalisés des versions précédentes sont convertis à la première ouverture.
+
 ## Installation
 
 ### Depuis le dépôt Aniyomi
@@ -97,7 +119,7 @@ Puis installez **FR Unifié** depuis **Parcourir → Extensions Anime**.
 Le fichier de version est nommé :
 
 ```text
-FR-Unifie-Aniyomi-v16.8.apk
+FR-Unifie-Aniyomi-v16.9.apk
 ```
 
 Android peut demander l’autorisation d’installer depuis la source utilisée. Lors du premier lancement, Aniyomi peut aussi demander de faire confiance au certificat de l’extension.
@@ -109,9 +131,9 @@ Compatibilité : **API d’extension Aniyomi 16**, **Android 8.0 / API 26 minimu
 1. Dans **Catalogues**, activez les services souhaités et choisissez les langues.
 2. Dans les filtres de recherche, choisissez **Stremio**, puis l’une des entrées détectées dans `catalogs[]` et, si disponible, son option de genre/année/langue.
 3. Si vous voulez uniquement Stremio, désactivez **Catalogues principaux** et gardez **Catalogue Stremio** actif.
-4. Choisissez la priorité **Nuvio/Stremio**.
+4. Choisissez la priorité **Nuvio/Stremio**, puis **classez langues et qualités avec les flèches** (VF d’abord par défaut). Activez la **recherche rapide** si les recherches vous paraissent lentes.
 5. Dans **Nuvio**, ouvrez le sélecteur pour voir tous les plugins ajoutés (avec leur drapeau), puis **classez-les avec les flèches** et choisissez les langues réellement exécutées.
-6. Réglez au besoin le nombre de scrapeurs simultanés (3 recommandé) ; les motifs de priorité et l’ordre enregistré restent modifiables en texte pour les cas avancés.
+6. Réglez au besoin le nombre de scrapeurs simultanés (3 recommandé) ; l’ordre enregistré des sources reste modifiable en texte pour les cas avancés. Laissez la **mise à jour automatique des sources** active, ou lancez **Mettre à jour les sources maintenant** après l’ajout d’un dépôt.
 7. Choisissez l’**organisation des saisons** souhaitée (classique par défaut) : fusionnée pour ouvrir directement tous les épisodes, séparée pour découper les séries dès le catalogue.
 8. Si certains sites ne se résolvent pas sur votre téléphone, ajoutez un **DNS personnalisé** (ex. `1.1.1.1`) dans la section Réseau, puis testez-le.
 9. Dans **Stremio**, activez les addons désirés.

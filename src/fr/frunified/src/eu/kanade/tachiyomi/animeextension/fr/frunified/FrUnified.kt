@@ -153,12 +153,33 @@ class FrUnified : Source() {
                     editor.putString(FrSettings.KEY_DNS_HOSTS, "")
                 }
             }
+            if (version < 7) {
+                // Les anciens « motifs de priorité » deviennent l'ordre des critères à flèches ;
+                // un utilisateur qui les avait personnalisés retrouve ses choix en tête.
+                if (!all.containsKey(FrSettings.KEY_STREAM_ORDER)) {
+                    val legacy = all[FrSettings.KEY_NUVIO_PRIORITY] as? String
+                    val migrated = FrSettings.streamOrderFromLegacyPatterns(legacy) ?: FrSettings.DEFAULT_STREAM_ORDER
+                    editor.putString(FrSettings.KEY_STREAM_ORDER, migrated.joinToString("\n"))
+                }
+                editor.remove(FrSettings.KEY_NUVIO_PRIORITY)
+                if (!all.containsKey(FrSettings.KEY_NUVIO_AUTO_UPDATE)) {
+                    editor.putBoolean(FrSettings.KEY_NUVIO_AUTO_UPDATE, true)
+                }
+                if (!all.containsKey(FrSettings.KEY_QUICK_SEARCH)) {
+                    editor.putBoolean(FrSettings.KEY_QUICK_SEARCH, false)
+                }
+            }
             editor.putInt(FrSettings.KEY_SETTINGS_VERSION, FrSettings.SETTINGS_VERSION)
             editor.apply()
         }
     }
 
     private val settingsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private companion object {
+        /** Durée maximale de chaque catalogue en « recherche rapide ». */
+        const val QUICK_SEARCH_TIMEOUT_MS = 6_000L
+    }
 
     init {
         FrSettings.init(preferences)
@@ -167,6 +188,10 @@ class FrUnified : Source() {
         settingsScope.launch {
             // Précharge et met en cache chaque entrée catalogs[] des manifests actifs.
             runCatching { StremioCatalog.catalogs() }
+        }
+        settingsScope.launch {
+            // Mise à jour automatique (au plus quotidienne) des dépôts et scripts Nuvio.
+            runCatching { NuvioClient.autoUpdateIfDue() }
         }
     }
 
@@ -288,21 +313,26 @@ class FrUnified : Source() {
         val useStremioOnly = type == "stremio" ||
             !FrSettings.useMainCatalogs ||
             (!FrSettings.useTmdbCatalog && !FrSettings.useAnimeCatalog)
+        // Recherche rapide : TMDB et AniList seulement (pas de repli Jikan ni d'addons Stremio
+        // en mode mixte), chaque appel borné à QUICK_SEARCH_TIMEOUT_MS.
+        val quick = FrSettings.quickSearch
+        suspend fun <T> bounded(block: suspend () -> List<T>): List<T> =
+            if (quick) withTimeoutOrNull(QUICK_SEARCH_TIMEOUT_MS) { block() }.orEmpty() else block()
         val jobs = buildList {
-            if (FrSettings.useStremioCatalog && (useStremioOnly || type == "all")) {
-                add(async { StremioCatalog.browse(page, query, stremioCatalogKey, stremioExtras) })
+            if (FrSettings.useStremioCatalog && (useStremioOnly || (type == "all" && !quick))) {
+                add(async { bounded { StremioCatalog.browse(page, query, stremioCatalogKey, stremioExtras) } })
             }
             if (!useStremioOnly && FrSettings.useTmdbCatalog && type != "anime") {
                 add(
                     async {
-                        TmdbCatalog.search(query, page).filter {
+                        bounded { TmdbCatalog.search(query, page) }.filter {
                             type == "all" || it.id.kind == type
                         }
                     },
                 )
             }
             if (!useStremioOnly && FrSettings.useAnimeCatalog && type in setOf("all", "anime")) {
-                add(async { AnimeCatalog.search(query, page) })
+                add(async { bounded { AnimeCatalog.search(query, page, quick = quick) } })
             }
         }
         val items = jobs.awaitAll().flatten().deduplicate().splitMultiSeasonSeries()
@@ -1104,7 +1134,7 @@ class FrUnified : Source() {
                 runCatching { StremioClient.subtitles(payload) }.getOrDefault(emptyList())
             }.orEmpty()
         }
-        val nuvioHosters = videosToHosters(nuvioVideos, tracks, "Nuvio")
+        val nuvioHosters = videosToHosters(nuvioVideos, tracks, StreamLabel.ENGINE_NUVIO)
 
         if (FrSettings.engineOrder == "stremio_first") {
             stremioHosters + nuvioHosters
@@ -1131,12 +1161,13 @@ class FrUnified : Source() {
             }
             .sortedWith(videoComparator())
 
+        // Un serveur par source, nommé « Nuvio · flemmix : VF, VOSTFR » (langues réellement trouvées).
         return prepared.groupBy { video ->
-            video.videoTitle.substringBefore(" • ").substringBefore(" · ").ifBlank { "FR Unifié" }
+            StreamLabel.parse(video.videoTitle)?.source?.ifBlank { null } ?: "FR Unifié"
         }.map { (provider, providerVideos) ->
             Hoster(
                 hosterUrl = "frunified://${provider.hashCode()}",
-                hosterName = "$engineName · $provider",
+                hosterName = StreamLabel.hosterName(engineName, provider, providerVideos.map(Video::videoTitle)),
                 videoList = providerVideos,
             )
         }.sortedWith(hosterComparator())
@@ -1152,26 +1183,11 @@ class FrUnified : Source() {
 
     override fun List<Video>.sortVideos(): List<Video> = sortedWith(videoComparator())
 
-    private fun videoComparator(): Comparator<Video> =
-        compareBy<Video> { StremioClient.priorityRank(it.videoTitle) }
-            .thenByDescending { it.preferred }
-            .thenByDescending { it.resolution ?: 0 }
+    /** Ordre des flux : critères classés avec les flèches (langue puis qualité), voir [StreamRanker]. */
+    private fun videoComparator(): Comparator<Video> = StreamRanker.videoComparator()
 
     private fun hosterComparator(): Comparator<Hoster> =
-        compareBy<Hoster> { hoster ->
-            val stremio = hoster.hosterName.startsWith("Stremio ·")
-            if (FrSettings.engineOrder == "stremio_first") {
-                if (stremio) 0 else 1
-            } else {
-                if (stremio) 1 else 0
-            }
-        }.thenBy { hoster ->
-            minOf(
-                StremioClient.priorityRank(hoster.hosterName),
-                hoster.videoList.orEmpty().minOfOrNull { StremioClient.priorityRank(it.videoTitle) }
-                    ?: Int.MAX_VALUE,
-            )
-        }.thenBy { it.hosterName.lowercase() }
+        StreamRanker.hosterComparator(stremioFirst = FrSettings.engineOrder == "stremio_first")
 
     override fun getAnimeUrl(anime: SAnime): String {
         val id = CatalogId.parse(anime.url) ?: return baseUrl
@@ -1231,6 +1247,12 @@ class FrUnified : Source() {
             arrayOf("Mixte", "Films", "Séries", "Animés", "Stremio"),
             arrayOf("mixed", "movies", "series", "anime", "stremio"),
         )
+        switch(
+            FrSettings.KEY_QUICK_SEARCH,
+            false,
+            "Recherche rapide",
+            "N'interroge que TMDB et AniList (bornés à 6 s) : pas de repli Jikan ni d'addons Stremio en mode mixte.",
+        )
         action(
             "action_catalog_languages",
             "Langues des catalogues",
@@ -1264,13 +1286,24 @@ class FrUnified : Source() {
             multiline = false,
         )
 
-        header("🧭 2 · LECTURE (ordre des moteurs)")
+        header("🧭 2 · LECTURE (ordre des moteurs et des flux)")
         list(
             FrSettings.KEY_ENGINE_ORDER,
             "nuvio_first",
             "Ordre des moteurs de lecture",
             arrayOf("Nuvio d'abord, Stremio en secours", "Stremio d'abord, Nuvio en secours"),
             arrayOf("nuvio_first", "stremio_first"),
+        )
+        action(
+            "action_stream_order",
+            "Classer langues et qualités avec les flèches",
+            "VF avant VOSTFR, 1080p avant 4K… Le premier critère satisfait décide de l'ordre des flux.",
+        ) { showStreamOrderDialog(context) }
+        edit(
+            FrSettings.KEY_STREAM_ORDER,
+            FrSettings.DEFAULT_STREAM_ORDER.joinToString("\n"),
+            "Ordre enregistré des critères (texte)",
+            "Généré par le classement à flèches : VF, VFF, VFQ, MULTI, VOSTFR, VO, 1080p, 4K, 720p…",
         )
 
         header("📺 3 · SOURCES NUVIO (sites de streaming)")
@@ -1337,18 +1370,22 @@ class FrUnified : Source() {
             arrayOf("2", "4", "8", "12", "0"),
         )
         edit(
-            FrSettings.KEY_NUVIO_PRIORITY,
-            FrSettings.DEFAULT_NUVIO_PRIORITY.joinToString(","),
-            "Priorités des flux (texte)",
-            "Motifs ordonnés : VF, VOSTFR, qualité… séparés par des virgules.",
-            multiline = false,
-        )
-        edit(
             FrSettings.KEY_NUVIO_ORDER,
             FrSettings.RECOMMENDED_NUVIO_IDS.joinToString("\n"),
             "Ordre enregistré des sources (texte)",
             "Généré par le classement à flèches. Modifiable ici dans les cas avancés.",
         )
+        switch(
+            FrSettings.KEY_NUVIO_AUTO_UPDATE,
+            true,
+            "Mise à jour automatique des sources",
+            "Relit les dépôts et retélécharge les scripts modifiés une fois par jour, au lancement.",
+        )
+        action(
+            "action_nuvio_update",
+            "Mettre à jour les sources maintenant",
+            "Force la relecture des dépôts Nuvio et le rafraîchissement de tous les scripts.",
+        ) { runNuvioUpdate(context) }
 
         header("🧩 4 · STREMIO (addons)")
         switch(
@@ -1446,17 +1483,25 @@ class FrUnified : Source() {
         val guide = buildString {
             appendLine("🎬 1 · CATALOGUES")
             appendLine(
-                "Sélectionnez ce que vous voyez à l'accueil : TMDB (films/séries), AniList/Jikan (animés), Stremio. La langue principale pilote les fiches TMDB.",
+                "Sélectionnez ce que vous voyez à l'accueil : TMDB (films/séries), AniList/Jikan (animés), Stremio. " +
+                    "La langue principale pilote les fiches TMDB. " +
+                    "« Recherche rapide » ne consulte que TMDB et AniList pour répondre en quelques secondes.",
             )
             appendLine()
             appendLine("🧭 2 · LECTURE")
             appendLine(
-                "« Nuvio d'abord » essaie d'abord les sites de streaming (souvent la VF), puis Stremio en secours — ou l'inverse.",
+                "« Nuvio d'abord » essaie d'abord les sites de streaming (souvent la VF), puis Stremio en secours " +
+                    "— ou l'inverse. Le classement à flèches des langues et qualités (VF avant VOSTFR, " +
+                    "1080p avant 4K…) ordonne les flux : chaque flux s'affiche « (VF) 1080p · source · moteur » " +
+                    "et chaque serveur « Nuvio · source : VF, VOSTFR ».",
             )
             appendLine()
             appendLine("📺 3 · SOURCES NUVIO")
             appendLine(
-                "Choisissez les sites activés (drapeau = langue), puis classez-les avec les flèches : la première source est essayée en premier. « Vérifier les liens » rejette les popups HTML qui se téléchargent à la place de la vidéo.",
+                "Choisissez les sites activés (drapeau = langue), puis classez-les avec les flèches : la première " +
+                    "source est essayée en premier. « Vérifier les liens » rejette les popups HTML qui se " +
+                    "téléchargent à la place de la vidéo. La mise à jour automatique relit les dépôts et " +
+                    "rafraîchit les scripts une fois par jour ; « Mettre à jour maintenant » force l'opération.",
             )
             appendLine()
             appendLine("🧩 4 · STREMIO")
@@ -1795,6 +1840,113 @@ class FrUnified : Source() {
             )
             .setPositiveButton("Terminé", null)
             .show()
+    }
+
+    /** Classement à flèches des critères de flux (langues et qualités), enregistré à chaque déplacement. */
+    private fun showStreamOrderDialog(dialogContext: Context) {
+        val ordered = (FrSettings.streamOrder + FrSettings.STREAM_CRITERIA).distinct().toMutableList()
+        val density = dialogContext.resources.displayMetrics.density
+        val padding = (density * 10).toInt()
+        val container = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, 0)
+        }
+        container.addView(
+            TextView(dialogContext).apply {
+                text = "N° 1 = critère le plus souhaité. Un flux est classé d'après le premier critère qu'il " +
+                    "satisfait, puis le suivant (VF 720p passe avant VOSTFR 1080p si VF est devant). " +
+                    "L'ordre est enregistré à chaque déplacement."
+                textSize = 13f
+                setPadding(0, 0, 0, (density * 8).toInt())
+            },
+        )
+
+        fun persistOrder() {
+            preferences.edit().putString(FrSettings.KEY_STREAM_ORDER, ordered.joinToString("\n")).apply()
+        }
+
+        fun arrow(text: String, description: String, onClick: () -> Unit): Button = Button(dialogContext).apply {
+            this.text = text
+            contentDescription = description
+            textSize = 13f
+            minWidth = 0
+            minHeight = 0
+            setPadding((density * 5).toInt(), 0, (density * 5).toInt(), 0)
+            setOnClickListener { onClick() }
+        }
+
+        fun render() {
+            if (container.childCount > 1) {
+                container.removeViews(1, container.childCount - 1)
+            }
+            ordered.forEachIndexed { index, criterion ->
+                val isLanguage = criterion in StreamLabel.LANGUAGE_ORDER
+                val labelText = "${index + 1}. ${if (isLanguage) "🗣️" else "🎞️"} " +
+                    if (isLanguage) {
+                        StreamLabel.languageLabel(criterion)
+                    } else {
+                        StreamLabel.qualityValue(criterion)?.let(StreamLabel::qualityLabel) ?: criterion
+                    }
+                val textView = TextView(dialogContext).apply {
+                    text = labelText
+                    textSize = 14f
+                    maxLines = 2
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                fun moveTo(target: Int) {
+                    if (target < 0 || target >= ordered.size || target == index) return
+                    ordered.add(target, ordered.removeAt(index))
+                    persistOrder()
+                    render()
+                }
+                val row = LinearLayout(dialogContext).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(textView)
+                    addView(arrow("⏫", "Déplacer tout en haut") { moveTo(0) })
+                    addView(arrow("▲", "Monter d'une place") { moveTo(index - 1) })
+                    addView(arrow("▼", "Descendre d'une place") { moveTo(index + 1) })
+                    addView(arrow("⏬", "Déplacer tout en bas") { moveTo(ordered.size - 1) })
+                }
+                container.addView(row)
+            }
+        }
+        render()
+
+        AlertDialog.Builder(dialogContext)
+            .setTitle("Classer langues et qualités (${ordered.size})")
+            .setView(
+                ScrollView(dialogContext).apply {
+                    addView(container)
+                },
+            )
+            .setNeutralButton("Ordre conseillé") { _, _ ->
+                preferences.edit()
+                    .putString(FrSettings.KEY_STREAM_ORDER, FrSettings.DEFAULT_STREAM_ORDER.joinToString("\n"))
+                    .apply()
+                displayToast("Ordre conseillé rétabli : VF, VFF, VFQ, MULTI, VOSTFR, VO, 1080p, 4K…")
+            }
+            .setPositiveButton("Terminé", null)
+            .show()
+    }
+
+    /** Relecture immédiate des dépôts Nuvio et rafraîchissement de tous les scripts. */
+    private fun runNuvioUpdate(dialogContext: Context) {
+        displayToast("Mise à jour des sources Nuvio en cours…", Toast.LENGTH_LONG)
+        settingsScope.launch {
+            val report = runCatching { NuvioClient.updateSources() }
+            handler.post {
+                AlertDialog.Builder(dialogContext)
+                    .setTitle(if (report.isSuccess) "Sources Nuvio à jour" else "Mise à jour impossible")
+                    .setMessage(
+                        report.map(NuvioClient.UpdateReport::summary).getOrElse { failure ->
+                            failure.message?.take(300) ?: "Erreur inconnue"
+                        },
+                    )
+                    .setPositiveButton("Fermer", null)
+                    .show()
+            }
+        }
     }
 
     private fun showNuvioDiagnostic(dialogContext: Context) {
