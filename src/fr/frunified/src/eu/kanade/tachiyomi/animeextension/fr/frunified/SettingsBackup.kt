@@ -16,14 +16,19 @@ object SettingsBackup {
         put("format", "fr-unified-backup")
         put("version", 1)
         put("createdAt", System.currentTimeMillis())
-        put("settings", JSONObject().apply {
-            preferences.all.toSortedMap().forEach { (key, value) ->
-                if (key !in excluded) when (value) {
-                    is String, is Boolean, is Int, is Long, is Float, is Double -> put(key, value)
-                    is Set<*> -> put(key, value.filterIsInstance<String>().joinToString("\n"))
+        put(
+            "settings",
+            JSONObject().apply {
+                preferences.all.toSortedMap().forEach { (key, value) ->
+                    if (key !in excluded) {
+                        when (value) {
+                            is String, is Boolean, is Int, is Long, is Float, is Double -> put(key, value)
+                            is Set<*> -> put(key, value.filterIsInstance<String>().joinToString("\n"))
+                        }
+                    }
                 }
-            }
-        })
+            },
+        )
     }.toString(2)
 
     fun restore(preferences: SharedPreferences, raw: String): Int {

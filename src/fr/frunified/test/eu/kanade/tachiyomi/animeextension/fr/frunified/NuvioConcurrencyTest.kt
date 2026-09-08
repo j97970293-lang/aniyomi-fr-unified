@@ -107,6 +107,7 @@ class NuvioConcurrencyTest {
                         }
                         val body = when {
                             path == "/manifest.json" -> manifest
+
                             path.startsWith("/data-") -> {
                                 val current = activeFetches.incrementAndGet()
                                 maxConcurrentFetches.updateAndGet { previous -> maxOf(previous, current) }
@@ -114,6 +115,7 @@ class NuvioConcurrencyTest {
                                 activeFetches.decrementAndGet()
                                 "ok"
                             }
+
                             else -> {
                                 val current = activeScripts.incrementAndGet()
                                 maxConcurrentScripts.updateAndGet { previous -> maxOf(previous, current) }

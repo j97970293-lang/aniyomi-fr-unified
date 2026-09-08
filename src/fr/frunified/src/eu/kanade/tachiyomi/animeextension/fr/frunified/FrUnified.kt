@@ -1634,7 +1634,16 @@ class FrUnified : Source() {
                     FrSettings.dnsHosts.forEach { server ->
                         val path = FrDns.testPath(server, "api.themoviedb.org")
                         val doh = path.dohAddresses.joinToString().ifBlank { "échec" }
-                        val udp = if (server.startsWith("http")) "non applicable" else path.udpAddresses.joinToString().ifBlank { "échec" }
+                        val udp = if (server.startsWith(
+                                "http",
+                            )
+                        ) {
+                            "non applicable"
+                        } else {
+                            path.udpAddresses.joinToString().ifBlank {
+                                "échec"
+                            }
+                        }
                         appendLine("• $server")
                         appendLine("  HTTPS/DoH ${path.dohEndpoint ?: "—"} → $doh (${path.dohMs} ms)")
                         appendLine("  UDP/53 → $udp (${path.udpMs} ms)")
@@ -2083,7 +2092,9 @@ class FrUnified : Source() {
         clipboard?.setPrimaryClip(ClipData.newPlainText("FR Unifié — sauvegarde", json))
         AlertDialog.Builder(dialogContext)
             .setTitle("Sauvegarde copiée")
-            .setMessage("${preferences.all.size} réglages copiés dans le presse-papiers. Conservez ce JSON dans un endroit sûr.")
+            .setMessage(
+                "${preferences.all.size} réglages copiés dans le presse-papiers. Conservez ce JSON dans un endroit sûr.",
+            )
             .setPositiveButton("Fermer", null)
             .show()
     }
@@ -2116,7 +2127,12 @@ class FrUnified : Source() {
             handler.post {
                 AlertDialog.Builder(dialogContext)
                     .setTitle(if (report.isSuccess) "Addons Stremio à jour" else "Mise à jour impossible")
-                    .setMessage(report.map(StremioCatalog.UpdateReport::summary).getOrElse { it.message ?: "Erreur inconnue" })
+                    .setMessage(
+                        report.map(StremioCatalog.UpdateReport::summary).getOrElse {
+                            it.message
+                                ?: "Erreur inconnue"
+                        },
+                    )
                     .setPositiveButton("Fermer", null)
                     .show()
             }
