@@ -589,7 +589,7 @@ object NuvioClient {
         return Regex("(?:return|case|throw|else|do|typeof|delete|void|yield)\\s*$").containsMatchIn(before)
     }
 
-    /** Exécute les scrapeurs activés selon le mode rapide, équilibré ou complet. */
+    /** Exécute tous les scrapeurs activés en parallèle (bornés par le sémaphore de concurrence). */
     suspend fun streams(payload: PlayPayload, callback: (Video) -> Unit): Boolean {
         if (!FrSettings.useNuvio) return false
         lastResults.clear()
@@ -602,15 +602,9 @@ object NuvioClient {
         val mediaType = if (payload.isSeries) "tv" else "movie"
         val season = if (payload.isSeries) (payload.season ?: 1) else 0
         val episode = if (payload.isSeries) (payload.episode ?: 1) else 0
-        val successesWanted = when (FrSettings.nuvioSearchMode) {
-            "complete" -> Int.MAX_VALUE
-            "balanced" -> 2
-            else -> 1
-        }
         val (tmdbTarget, absoluteTarget) = resolveEpisodeTargets(tmdbId, season, episode, payload)
         return runParallelScrapers(
             all,
-            successesWanted,
             limiter,
             tmdbId,
             mediaType,
@@ -623,10 +617,11 @@ object NuvioClient {
 
     /**
      * Tous les providers sont lancés en parallèle (bornés par le sémaphore de
-     * concurrence). Les modes rapide et équilibré n'attendent plus la fin d'un
-     * lot : dès qu'assez de sources ont réussi (et qu'une VF a été vue s'il y
-     * avait une langue explicite), les providers encore en file sont sautés ;
-     * ceux déjà en vol terminent pour ne pas perdre une VF.
+     * concurrence) et interrogés jusqu'au bout : il n'y a plus de mode rapide,
+     * équilibré ou complet ni d'arrêt quand une VF est trouvée. Chaque site actif
+     * renvoie ses liens, bornés uniquement par le réglage « flux maximum par site »
+     * (illimité par défaut, comme dans NuviO) — c'est pourquoi la recherche
+     * affiche autant de serveurs que les sites en fournissent.
      *
      * Pour les animés longs (One Piece…) ou les séries multi-saisons, chaque scrapeur
      * reçoit d'abord le format adapté à son type (numérotation absolue S1E1120 pour les
@@ -635,7 +630,6 @@ object NuvioClient {
      */
     private suspend fun runParallelScrapers(
         scrapers: List<NuvioScraper>,
-        successesWanted: Int,
         limiter: Semaphore,
         tmdbId: Int,
         mediaType: String,
@@ -644,55 +638,21 @@ object NuvioClient {
         payload: PlayPayload,
         callback: (Video) -> Unit,
     ): Boolean = coroutineScope {
-        val successes = AtomicInteger(0)
-        val sawExplicitAudio = AtomicBoolean(false)
-        val foundFrenchAudio = AtomicBoolean(false)
-        val stopNew = AtomicBoolean(false)
-
-        fun enough(): Boolean {
-            return successesWanted != Int.MAX_VALUE &&
-                successes.get() >= successesWanted &&
-                (!sawExplicitAudio.get() || foundFrenchAudio.get())
-        }
-
         val results = scrapers.map { scraper ->
             async {
-                if (stopNew.get()) return@async false
                 limiter.withPermit {
-                    if (stopNew.get()) return@withPermit false
                     val isAnimeScraper = scraper.id in ANIME_FOCUSED_IDS
                     val (pS, pE) = if (isAnimeScraper) absoluteTarget else tmdbTarget
                     val (fS, fE) = if (isAnimeScraper) tmdbTarget else absoluteTarget
 
                     var ok = runCatching {
-                        runScraper(scraper, tmdbId, mediaType, pS, pE, payload) { video ->
-                            StreamLabel.languageIn(video.videoTitle)?.let { tag ->
-                                sawExplicitAudio.set(true)
-                                if (tag in setOf("VF", "VFF", "VFQ", "MULTI")) {
-                                    foundFrenchAudio.set(true)
-                                }
-                            }
-                            callback(video)
-                        }
+                        runScraper(scraper, tmdbId, mediaType, pS, pE, payload, callback)
                     }.getOrDefault(false)
 
                     if (!ok && (pS to pE) != (fS to fE)) {
                         ok = runCatching {
-                            runScraper(scraper, tmdbId, mediaType, fS, fE, payload) { video ->
-                                StreamLabel.languageIn(video.videoTitle)?.let { tag ->
-                                    sawExplicitAudio.set(true)
-                                    if (tag in setOf("VF", "VFF", "VFQ", "MULTI")) {
-                                        foundFrenchAudio.set(true)
-                                    }
-                                }
-                                callback(video)
-                            }
+                            runScraper(scraper, tmdbId, mediaType, fS, fE, payload, callback)
                         }.getOrDefault(false)
-                    }
-
-                    if (ok) {
-                        successes.incrementAndGet()
-                        if (enough()) stopNew.set(true)
                     }
                     ok
                 }

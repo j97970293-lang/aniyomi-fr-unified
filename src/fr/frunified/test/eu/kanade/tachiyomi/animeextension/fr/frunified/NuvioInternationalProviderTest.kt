@@ -24,7 +24,6 @@ class NuvioInternationalProviderTest {
                 mapOf(
                     FrSettings.KEY_NUVIO_REPOS to repository,
                     FrSettings.KEY_NUVIO_ENABLED to ids.joinToString("\n"),
-                    FrSettings.KEY_NUVIO_LANGUAGES to "all",
                     FrSettings.KEY_NUVIO_MAX to "3",
                 ),
             ),

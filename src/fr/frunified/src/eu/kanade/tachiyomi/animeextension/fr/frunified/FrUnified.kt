@@ -215,6 +215,13 @@ class FrUnified : Source() {
                     editor.putString(FrSettings.KEY_NUVIO_MAX, "0")
                 }
             }
+            if (version < 10) {
+                // Les réglages « modes de recherche » (rapide/équilibré/complet) et
+                // « langues Nuvio » n'existent plus : tous les sites activés partent,
+                // aucune langue ne bloque l'exécution d'un site.
+                editor.remove(FrSettings.KEY_NUVIO_SEARCH_MODE)
+                editor.remove(FrSettings.KEY_NUVIO_LANGUAGES)
+            }
             editor.putInt(FrSettings.KEY_SETTINGS_VERSION, FrSettings.SETTINGS_VERSION)
             editor.apply()
         }
@@ -3222,7 +3229,6 @@ class FrUnified : Source() {
                     )
                     appendLine(L10n.t("Scrapeurs détectés : ${all.size}", "Scrapers detected: ${all.size}"))
                     appendLine(L10n.t("Scrapeurs actifs : ${active.size}", "Active scrapers: ${active.size}"))
-                    appendLine("Mode : ${FrSettings.nuvioSearchMode}")
                     if (checks.isEmpty()) {
                         appendLine()
                         append(L10n.t("Aucune source active à tester.", "No active source to test."))

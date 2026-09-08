@@ -1,0 +1,36 @@
+name: Check logs
+
+on:
+  push:
+    branches:
+      - "arena/01a08269-aniyomi-fr-unified"
+
+jobs:
+  spotless:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Spotless check
+        run: |
+          chmod +x gradlew
+          if ! ./gradlew :src:fr:frunified:spotlessCheck > /tmp/spotless.log 2>&1; then
+            {
+              echo '## spotlessCheck FAILED'
+              echo '```'
+              tail -n 200 /tmp/spotless.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo '## spotlessCheck OK' >> "$GITHUB_STEP_SUMMARY"
