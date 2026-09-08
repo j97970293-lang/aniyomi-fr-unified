@@ -1,4 +1,2 @@
- .spotless-log.txt                                  | 108 ---------------------
- .../animeextension/fr/frunified/FrUnified.kt       |  44 +++++----
- .../animeextension/fr/frunified/StremioCatalog.kt  |  10 +-
- 3 files changed, 32 insertions(+), 130 deletions(-)
+ .spotless-log.txt | 4 ----
+ 1 file changed, 4 deletions(-)
