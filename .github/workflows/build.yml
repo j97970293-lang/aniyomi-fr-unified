@@ -39,7 +39,11 @@ jobs:
             if ! eval "$cmd" > /tmp/cmd.log 2>&1; then
               cat /tmp/cmd.log
               local err_sample
-              err_sample=$(tail -n 15 /tmp/cmd.log | tr '\n' ' ')
+              if [ "$title" = "testDebugUnitTest" ]; then
+                err_sample=$(find src/fr/frunified/build/test-results/ -name "*.xml" -exec grep -B1 -A2 "failure message" {} + | head -n 20 | tr '\n' ' ')
+              else
+                err_sample=$(tail -n 15 /tmp/cmd.log | tr '\n' ' ')
+              fi
               echo "::error title=$title failed::$err_sample"
               exit 1
             fi
