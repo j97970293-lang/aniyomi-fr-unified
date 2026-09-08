@@ -31,10 +31,10 @@ jobs:
       - name: Build and check formatting
         run: |
           chmod +x gradlew
-          ./gradlew :src:fr:frunified:spotlessCheck --stacktrace
-          ./gradlew :src:fr:frunified:testDebugUnitTest --stacktrace
-          ./gradlew :src:fr:frunified:lintDebug --stacktrace
-          ./gradlew :src:fr:frunified:assembleDebug --stacktrace
+          ./gradlew :src:fr:frunified:spotlessCheck || { echo "=== SPOTLESS VIOLATION ==="; ./gradlew :src:fr:frunified:spotlessApply; git diff; exit 1; }
+          ./gradlew :src:fr:frunified:testDebugUnitTest || { echo "=== TESTS FAILED ==="; exit 1; }
+          ./gradlew :src:fr:frunified:lintDebug || { echo "=== LINT FAILED ==="; exit 1; }
+          ./gradlew :src:fr:frunified:assembleDebug || { echo "=== ASSEMBLE FAILED ==="; exit 1; }
 
       - name: Upload test APK
         uses: actions/upload-artifact@v4
