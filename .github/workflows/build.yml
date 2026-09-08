@@ -31,28 +31,7 @@ jobs:
       - name: Build and check formatting
         run: |
           chmod +x gradlew
-          
-          run_cmd() {
-            local title="$1"
-            local cmd="$2"
-            echo "Running $title..."
-            if ! eval "$cmd" > /tmp/cmd.log 2>&1; then
-              cat /tmp/cmd.log
-              local err_sample
-              if [ "$title" = "testDebugUnitTest" ]; then
-                err_sample=$(find src/fr/frunified/build/test-results/ -name "*.xml" -exec grep -B1 -A2 "failure message" {} + | head -n 20 | tr '\n' ' ')
-              else
-                err_sample=$(tail -n 15 /tmp/cmd.log | tr '\n' ' ')
-              fi
-              echo "::error title=$title failed::$err_sample"
-              exit 1
-            fi
-          }
-
-          run_cmd "spotlessCheck" "./gradlew :src:fr:frunified:spotlessCheck"
-          run_cmd "testDebugUnitTest" "./gradlew :src:fr:frunified:testDebugUnitTest"
-          run_cmd "lintDebug" "./gradlew :src:fr:frunified:lintDebug"
-          run_cmd "assembleDebug" "./gradlew :src:fr:frunified:assembleDebug"
+          ./gradlew :src:fr:frunified:spotlessCheck :src:fr:frunified:testDebugUnitTest :src:fr:frunified:lintDebug :src:fr:frunified:assembleDebug
 
       - name: Upload test APK
         uses: actions/upload-artifact@v4
