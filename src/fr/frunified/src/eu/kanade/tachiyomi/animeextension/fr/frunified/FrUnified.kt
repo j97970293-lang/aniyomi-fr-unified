@@ -1957,7 +1957,11 @@ class FrUnified : Source() {
                     addView(arrowButton("⏫", "Déplacer tout en haut", index > 0) { moveTo(0) })
                     addView(arrowButton("▲", "Monter d'une place", index > 0) { moveTo(index - 1) })
                     addView(arrowButton("▼", "Descendre d'une place", index < ordered.size - 1) { moveTo(index + 1) })
-                    addView(arrowButton("⏬", "Déplacer tout en bas", index < ordered.size - 1) { moveTo(ordered.size - 1) })
+                    addView(
+                        arrowButton("⏬", "Déplacer tout en bas", index < ordered.size - 1) {
+                            moveTo(ordered.size - 1)
+                        },
+                    )
                 }
                 itemsContainer.addView(row)
             }
@@ -2052,7 +2056,11 @@ class FrUnified : Source() {
                     addView(arrowButton("⏫", "Déplacer tout en haut", index > 0) { moveTo(0) })
                     addView(arrowButton("▲", "Monter d'une place", index > 0) { moveTo(index - 1) })
                     addView(arrowButton("▼", "Descendre d'une place", index < ordered.size - 1) { moveTo(index + 1) })
-                    addView(arrowButton("⏬", "Déplacer tout en bas", index < ordered.size - 1) { moveTo(ordered.size - 1) })
+                    addView(
+                        arrowButton("⏬", "Déplacer tout en bas", index < ordered.size - 1) {
+                            moveTo(ordered.size - 1)
+                        },
+                    )
                 }
                 itemsContainer.addView(row)
             }

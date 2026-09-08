@@ -657,12 +657,12 @@ object NuvioClient {
                         ok = runCatching {
                             runScraper(scraper, tmdbId, mediaType, fS, fE, payload) { video ->
                                 StreamLabel.languageIn(video.videoTitle)?.let { tag ->
-                                sawExplicitAudio.set(true)
-                                if (tag in setOf("VF", "VFF", "VFQ", "MULTI")) {
-                                    foundFrenchAudio.set(true)
+                                    sawExplicitAudio.set(true)
+                                    if (tag in setOf("VF", "VFF", "VFQ", "MULTI")) {
+                                        foundFrenchAudio.set(true)
+                                    }
                                 }
-                            }
-                            callback(video)
+                                callback(video)
                             }
                         }.getOrDefault(false)
                     }
