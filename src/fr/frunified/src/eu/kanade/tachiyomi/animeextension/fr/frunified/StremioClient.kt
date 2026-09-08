@@ -88,7 +88,7 @@ object StremioClient {
             val first = addon.targets.firstOrNull() ?: return@mapNotNull null
             Hoster(
                 hosterUrl = "${base(addon.base)}/stream/${first.type}/${first.id}.json",
-                hosterName = "Stremio · ${addon.name}",
+                hosterName = StreamLabel.hosterName(StreamLabel.ENGINE_STREMIO, addon.name, emptyList()),
                 internalData = encodeHosterPayload(addon, payload),
             )
         }
@@ -277,14 +277,26 @@ object StremioClient {
 
                 else -> return@mapNotNull null
             }
-            val displayLabel = listOfNotNull(label, quality?.takeUnless { label.contains(it, true) })
-                .joinToString(" • ")
+            val language = StreamLabel.languageOf("$label $quality")
+            val resolution = StreamLabel.qualityOf("$label $quality")
+            val title = StreamLabel(
+                language = language,
+                quality = resolution,
+                source = addonName,
+                engine = StreamLabel.ENGINE_STREMIO,
+                detail = StreamLabel.detail(
+                    listOf(label, quality),
+                    addonName,
+                    prefix = if (url == null) "Torrent" else null,
+                    noise = payload.titles,
+                ),
+            ).render()
             Video(
                 videoUrl = finalUrl,
-                videoTitle = "Stremio · $addonName • $displayLabel",
-                resolution = qualityOf("$label $quality"),
+                videoTitle = title,
+                resolution = resolution,
                 headers = headers,
-                preferred = isPreferred("$label $quality"),
+                preferred = StreamRanker.isPreferred(title, resolution),
             )
         }
     }
@@ -347,22 +359,4 @@ object StremioClient {
             lower.contains("localhost") ||
             lower.contains("/troll/master.m3u8")
     }
-
-    fun qualityOf(text: String): Int? = when {
-        text.contains("2160", true) || text.contains("4k", true) -> 2160
-        text.contains("1440", true) -> 1440
-        text.contains("1080", true) -> 1080
-        text.contains("720", true) -> 720
-        text.contains("480", true) -> 480
-        text.contains("360", true) -> 360
-        else -> null
-    }
-
-    fun priorityRank(text: String): Int {
-        val upper = text.uppercase()
-        return FrSettings.nuvioPriorityPatterns.indexOfFirst(upper::contains)
-            .let { if (it < 0) Int.MAX_VALUE else it }
-    }
-
-    fun isPreferred(text: String): Boolean = priorityRank(text) != Int.MAX_VALUE
 }

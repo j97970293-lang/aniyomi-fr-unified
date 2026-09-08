@@ -11,7 +11,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -230,14 +232,111 @@ object NuvioClient {
             val cached = runCatching { fresh.readText() }.getOrNull()
             if (!cached.isNullOrBlank()) return cached
         }
-        val code = withContext(Dispatchers.IO) {
-            scriptCandidates(scraper).firstNotNullOfOrNull { url ->
-                val (status, body) = doHttp(url, "GET", emptyMap(), null)
-                body.takeIf { status in 200..299 && it.isNotBlank() }
-            }
-        }
+        val code = fetchScript(scraper)?.second
         if (code != null) runCatching { file?.writeText(code) }
         return code
+    }
+
+    /**
+     * Télécharge le script d'une source (première URL candidate qui répond).
+     * Avec [since] > 0, la requête est conditionnelle et un 304 est renvoyé tel quel.
+     */
+    private suspend fun fetchScript(scraper: NuvioScraper, since: Long = 0L): Pair<Int, String>? =
+        withContext(Dispatchers.IO) {
+            val headers = if (since > 0L) mapOf("If-Modified-Since" to httpDate(since)) else emptyMap()
+            scriptCandidates(scraper).firstNotNullOfOrNull { url ->
+                val (status, body) = doHttp(url, "GET", headers, null)
+                when {
+                    status == 304 -> 304 to ""
+                    status in 200..299 && body.isNotBlank() -> status to body
+                    else -> null
+                }
+            }
+        }
+
+    private fun httpDate(timestamp: Long): String =
+        java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", java.util.Locale.US).apply {
+            timeZone = java.util.TimeZone.getTimeZone("GMT")
+        }.format(java.util.Date(timestamp))
+
+    // ------------------------------------------------------ mise à jour
+
+    /** Compte rendu d'une mise à jour des dépôts et des scripts Nuvio. */
+    data class UpdateReport(
+        val repositories: Int,
+        val scrapers: Int,
+        val updated: Int,
+        val unchanged: Int,
+        val failed: Int,
+        val elapsedMs: Long,
+    ) {
+        fun summary(): String = buildString {
+            append("Dépôts relus : ").append(repositories).append(" · sources actives : ").append(scrapers)
+            append('\n')
+            append("Scripts mis à jour : ").append(updated)
+            append(" · inchangés : ").append(unchanged)
+            if (failed > 0) append(" · en échec : ").append(failed)
+            append(" (").append(elapsedMs / 1000).append(" s)")
+        }
+    }
+
+    private val updateLock = Mutex()
+
+    /**
+     * Relit tous les manifests actifs puis retélécharge le script de chaque source
+     * sélectionnable (requête conditionnelle `If-Modified-Since` : un script inchangé
+     * ne coûte qu'un aller-retour). La date de passage est mémorisée pour [autoUpdateIfDue].
+     */
+    suspend fun updateSources(): UpdateReport = updateLock.withLock {
+        val startedAt = System.currentTimeMillis()
+        val repos = FrSettings.nuvioRepos.ifEmpty { FrSettings.DEFAULT_NUVIO_REPOS }
+            .filter { FrSettings.isNuvioRepoEnabled(it) }
+        repos.forEach(::invalidateRepository)
+        val scrapers = runCatching { scrapers() }.getOrDefault(emptyList())
+        val results = coroutineScope {
+            scrapers.chunked(4).flatMap { batch ->
+                batch.map { scraper -> async { runCatching { refreshScript(scraper) }.getOrNull() } }.awaitAll()
+            }
+        }
+        FrSettings.saveNuvioLastUpdate(System.currentTimeMillis())
+        UpdateReport(
+            repositories = repos.size,
+            scrapers = scrapers.size,
+            updated = results.count { it == true },
+            unchanged = results.count { it == false },
+            failed = results.count { it == null },
+            elapsedMs = System.currentTimeMillis() - startedAt,
+        )
+    }
+
+    /** `true` : script changé ; `false` : inchangé ; `null` : téléchargement impossible. */
+    private suspend fun refreshScript(scraper: NuvioScraper): Boolean? {
+        val file = scriptFile(scraper)
+        val existing = file?.takeIf { it.exists() && it.length() > 0L }
+        val (status, code) = fetchScript(scraper, existing?.lastModified() ?: 0L) ?: return null
+        if (status == 304) {
+            existing?.setLastModified(System.currentTimeMillis())
+            return false
+        }
+        val previous = existing?.let { runCatching { it.readText() }.getOrNull() }
+        val changed = previous != code
+        if (changed) {
+            runCatching { file?.writeText(code) }
+        } else {
+            existing?.setLastModified(System.currentTimeMillis())
+        }
+        return changed
+    }
+
+    /**
+     * Mise à jour automatique au démarrage : au plus une fois par
+     * [FrSettings.NUVIO_AUTO_UPDATE_INTERVAL_MS], et seulement si le réglage est actif.
+     */
+    suspend fun autoUpdateIfDue(now: Long = System.currentTimeMillis()): UpdateReport? {
+        if (!FrSettings.useNuvio || !FrSettings.nuvioAutoUpdate) return null
+        val last = FrSettings.nuvioLastUpdate
+        if (last in 1..now && now - last < FrSettings.NUVIO_AUTO_UPDATE_INTERVAL_MS) return null
+        return updateSources()
     }
 
     /**
@@ -535,7 +634,7 @@ object NuvioClient {
                     runCatching {
                         limiter.withPermit {
                             runScraper(scraper, tmdbId, mediaType, season, episode, payload) { video ->
-                                audioTag(video.videoTitle)?.let { tag ->
+                                StreamLabel.languageIn(video.videoTitle)?.let { tag ->
                                     sawExplicitAudio.set(true)
                                     if (tag in setOf("VF", "VFF", "VFQ", "MULTI")) {
                                         foundFrenchAudio.set(true)
@@ -847,7 +946,7 @@ object NuvioClient {
                         }.getOrDefault(0)) {
                         if (maxHere > 0 && count >= maxHere) break
                         val obj = ScriptableObject.getProperty(streams, i) as? Scriptable ?: continue
-                        val link = toLink(scope, scraper.name, payload, obj) ?: continue
+                        val link = toLink(scope, scraper, payload, obj) ?: continue
                         val deniedStatus = deniedStreamStatus(link)
                         if (deniedStatus != null) {
                             rejected++
@@ -972,10 +1071,11 @@ object NuvioClient {
 
     private fun toLink(
         scope: Scriptable,
-        scraperName: String,
+        scraper: NuvioScraper,
         payload: PlayPayload,
         obj: Scriptable,
     ): Video? {
+        val scraperName = scraper.name
         fun prop(vararg names: String): String? {
             for (name in names) {
                 val v = runCatching { ScriptableObject.getProperty(obj, name) }.getOrNull() ?: continue
@@ -998,6 +1098,8 @@ object NuvioClient {
         val quality = prop("quality", "resolution")
         val language = prop("language", "lang")
         val audio = audioTag(listOfNotNull(providerLabel, label, language).joinToString(" "))
+            ?: StreamLabel.languageFromCode(language)
+            ?: StreamLabel.languageFromProvider(scraper.contentLanguage)
 
         val headers = runCatching {
             val h = ScriptableObject.getProperty(obj, "headers")
@@ -1016,34 +1118,44 @@ object NuvioClient {
         }.getOrNull()?.takeIf { it.isNotEmpty() }
 
         val resolution = qualityOf("$label $quality")
-        val title = buildList {
-            add(scraperName)
-            add(label)
-            if (audio != null && audioTag(label) == null) add(audio)
-            if (!quality.isNullOrBlank() && qualityOf(label) == null) add(quality)
-        }.distinct().joinToString(" • ")
-        return when {
-            url != null -> Video(
-                videoUrl = url,
+        val kind = when {
+            url != null -> "direct"
+            infoHash != null -> "torrent"
+            else -> return null
+        }
+        // « (VF) 1080p · flemmix · Nuvio · Uqload » : langue, qualité, source, moteur, puis
+        // le détail du flux (lecteur, nom de fichier…) débarrassé des informations déjà affichées.
+        val title = StreamLabel(
+            language = audio,
+            quality = resolution,
+            source = scraperName,
+            engine = StreamLabel.ENGINE_NUVIO,
+            detail = StreamLabel.detail(
+                listOf(providerLabel, label, quality),
+                scraperName,
+                prefix = if (kind == "torrent") "Torrent" else null,
+                noise = payload.titles,
+            ),
+        ).render()
+        val preferred = StreamRanker.isPreferred(title, resolution)
+        return if (kind == "direct") {
+            Video(
+                videoUrl = url!!,
                 videoTitle = title,
                 resolution = resolution,
                 headers = headers?.toOkHttpHeaders(),
-                preferred = StremioClient.isPreferred(title),
+                preferred = preferred,
             )
-
-            infoHash != null -> {
-                val magnet = "magnet:?xt=urn:btih:$infoHash" +
-                    "&dn=${java.net.URLEncoder.encode(payload.primaryTitle, "UTF-8")}" +
-                    TRACKERS.joinToString("") { "&tr=${java.net.URLEncoder.encode(it, "UTF-8")}" }
-                Video(
-                    videoUrl = magnet,
-                    videoTitle = "Torrent • $title",
-                    resolution = resolution,
-                    preferred = StremioClient.isPreferred(title),
-                )
-            }
-
-            else -> null
+        } else {
+            val magnet = "magnet:?xt=urn:btih:$infoHash" +
+                "&dn=${java.net.URLEncoder.encode(payload.primaryTitle, "UTF-8")}" +
+                TRACKERS.joinToString("") { "&tr=${java.net.URLEncoder.encode(it, "UTF-8")}" }
+            Video(
+                videoUrl = magnet,
+                videoTitle = title,
+                resolution = resolution,
+                preferred = preferred,
+            )
         }
     }
 
@@ -1064,27 +1176,10 @@ object NuvioClient {
         return if (count > 0) builder.build() else null
     }
 
-    private fun qualityOf(text: String): Int? = StremioClient.qualityOf(text) ?: when {
-        text.contains("uhd", true) -> 2160
-        text.contains("fullhd", true) || text.contains("full hd", true) -> 1080
-        Regex("(^|[^A-Z])HD([^A-Z]|$)").containsMatchIn(text.uppercase()) -> 720
-        Regex("(^|[^A-Z])SD([^A-Z]|$)").containsMatchIn(text.uppercase()) -> 480
-        else -> null
-    }
+    private fun qualityOf(text: String): Int? = StreamLabel.qualityOf(text)
 
-    private fun audioTag(text: String): String? {
-        val upper = text.uppercase()
-        return when {
-            Regex("(^|[^A-Z0-9])VOSTFR([^A-Z0-9]|$)").containsMatchIn(upper) -> "VOSTFR"
-            Regex("(^|[^A-Z0-9])VOSTF?([^A-Z0-9]|$)").containsMatchIn(upper) -> "VOSTFR"
-            Regex("(^|[^A-Z0-9])VFQ([^A-Z0-9]|$)").containsMatchIn(upper) -> "VFQ"
-            Regex("(^|[^A-Z0-9])VFF([^A-Z0-9]|$)").containsMatchIn(upper) -> "VFF"
-            upper.contains("TRUEFRENCH") -> "VF"
-            Regex("(^|[^A-Z0-9])VF([^A-Z0-9]|$)").containsMatchIn(upper) -> "VF"
-            Regex("(^|[^A-Z0-9])MULTI([^A-Z0-9]|$)").containsMatchIn(upper) -> "MULTI"
-            else -> null
-        }
-    }
+    /** Langue audio explicite d'un libellé de flux (VF, VFF, VFQ, MULTI, VOSTFR) ; `null` sinon. */
+    private fun audioTag(text: String): String? = StreamLabel.languageOf(text)?.takeIf { it != "VO" }
 
     // ------------------------------------------------- ID TMDB (animé)
 
@@ -1097,20 +1192,30 @@ object NuvioClient {
      */
     private suspend fun tmdbId(payload: PlayPayload): Int? {
         payload.tmdbId?.let { return it }
+        // Premier passage avec l'année de la fiche ; second passage sans année lorsque rien ne
+        // correspond (année de première diffusion différente entre AniList/MAL et TMDB, ou absente).
+        val years = if (payload.year != null) listOf(payload.year, null) else listOf(null)
+        for (year in years) {
+            tmdbIdFor(payload, year)?.let { return it }
+        }
+        return null
+    }
+
+    private suspend fun tmdbIdFor(payload: PlayPayload, year: Int?): Int? {
         val now = System.currentTimeMillis()
         var best: Pair<Double, Int>? = null
         for (title in payload.titles.take(6)) {
-            val key = "$title|${payload.year}"
+            val key = "$title|$year"
             val cachedHit = tmdbCache[key]
             if (cachedHit != null && cachedHit.first > now) {
                 cachedHit.second?.let { return it }
                 continue
             }
             val found = runCatching {
-                TmdbCatalog.searchBest(title, payload.year)?.let { item ->
+                TmdbCatalog.searchBest(title, year)?.let { item ->
                     val id = item.id.id.toIntOrNull()
                     if (id != null) {
-                        val score = TitleMatch.score(payload.titles, item.title, payload.year, item.year)
+                        val score = TitleMatch.score(payload.titles, item.title, year, item.year)
                         score to id
                     } else {
                         null

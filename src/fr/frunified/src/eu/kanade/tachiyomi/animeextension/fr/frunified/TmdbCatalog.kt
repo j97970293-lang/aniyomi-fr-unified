@@ -142,14 +142,20 @@ object TmdbCatalog {
 
     suspend fun findTmdbId(payload: PlayPayload): Int? {
         payload.tmdbId?.let { return it }
-        var best: Pair<Double, Int>? = null
-        for (title in payload.titles.take(6)) {
-            val item = runCatching { searchBest(title, payload.year) }.getOrNull() ?: continue
-            val id = item.id.id.toIntOrNull() ?: continue
-            val score = TitleMatch.score(payload.titles, item.title, payload.year, item.year)
-            if (best == null || score > best!!.first) best = score to id
+        // Avec l'année d'abord, puis sans : les fiches AniList/MAL datent souvent d'une autre
+        // année que TMDB (première diffusion vs sortie française) ou n'en ont pas du tout.
+        val years = if (payload.year != null) listOf(payload.year, null) else listOf(null)
+        for (year in years) {
+            var best: Pair<Double, Int>? = null
+            for (title in payload.titles.take(6)) {
+                val item = runCatching { searchBest(title, year) }.getOrNull() ?: continue
+                val id = item.id.id.toIntOrNull() ?: continue
+                val score = TitleMatch.score(payload.titles, item.title, year, item.year)
+                if (best == null || score > best!!.first) best = score to id
+            }
+            best?.let { return it.second }
         }
-        return best?.second
+        return null
     }
 
     suspend fun imdbId(payload: PlayPayload): String? {
