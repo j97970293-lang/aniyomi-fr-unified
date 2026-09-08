@@ -358,6 +358,7 @@ object FrSettings {
             .filter(String::isNotBlank)
             .toSet()
             .ifEmpty { setOf("fr") }
+
     /**
      * Nombre maximal de flux par site (0 = illimité, valeur par défaut depuis la 16.13 :
      * les sites fournissent souvent 8 à 20 liens par épisode, comme dans NuviO).

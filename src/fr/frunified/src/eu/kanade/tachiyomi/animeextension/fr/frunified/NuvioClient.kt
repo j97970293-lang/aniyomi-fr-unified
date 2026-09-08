@@ -1019,7 +1019,8 @@ object NuvioClient {
                     lastResults[scraper.id] = if (emitted) {
                         "✓ $count $linksLabel" + rejectedSuffix
                     } else {
-                        "✓ 0 " + L10n.t("lien", "links") +
+                        "✓ 0 " +
+                            L10n.t("lien", "links") +
                             rejectedSuffix +
                             diagSuffix(scraper.id)
                     }
