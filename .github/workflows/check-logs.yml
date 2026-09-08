@@ -69,3 +69,4 @@ jobs:
           exit 0
 
 # Déclenché par push sur la branche arena (fichiers hors .spotless-log.txt).
+# (dernière ligne : déclencheur de vérification)
