@@ -3,15 +3,25 @@ package eu.kanade.tachiyomi.animeextension.fr.frunified
 import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.text.InputType
 import android.text.TextUtils
 import android.view.Gravity
+import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -38,7 +48,9 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
+import java.io.File
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
@@ -51,7 +63,12 @@ import java.util.TimeZone
  */
 class FrUnified : Source() {
     override val name = "FR Unifié"
-    override val lang = "fr"
+    /**
+     * « all » : FR Unifié n'est pas qu'une extension française — son contenu est
+     * international (sites FR, TR, EN, …) et son interface propose le français et
+     * l'anglais. Elle apparaît donc dans tous les filtres de langue d'Aniyomi.
+     */
+    override val lang = "all"
     override val baseUrl = "https://www.themoviedb.org"
     override val supportsLatest = true
 
@@ -178,6 +195,24 @@ class FrUnified : Source() {
                 }
                 if (!all.containsKey(FrSettings.KEY_BACKUP_AUTO_RESTORE)) {
                     editor.putBoolean(FrSettings.KEY_BACKUP_AUTO_RESTORE, false)
+                }
+            }
+            if (version < 9) {
+                if (!all.containsKey(FrSettings.KEY_UI_LANGUAGE)) {
+                    editor.putString(FrSettings.KEY_UI_LANGUAGE, L10n.FR)
+                }
+                // L'ancien interrupteur « catalogues principaux » est remplacé par
+                // les quatre cases du catalogue : il était coupé = tous coupés.
+                if ((all[FrSettings.KEY_USE_MAIN_CATALOGS] as? Boolean) == false) {
+                    editor.putBoolean(FrSettings.KEY_USE_TMDB, false)
+                    editor.putBoolean(FrSettings.KEY_USE_ANIME, false)
+                    editor.putBoolean(FrSettings.KEY_USE_JIKAN, false)
+                }
+                editor.remove(FrSettings.KEY_USE_MAIN_CATALOGS)
+                // « Flux maximum par site » resté à l'ancienne valeur par défaut (4) :
+                // passage à illimité, comme dans NuviO.
+                if ((all[FrSettings.KEY_NUVIO_MAX] as? String) == "4") {
+                    editor.putString(FrSettings.KEY_NUVIO_MAX, "0")
                 }
             }
             editor.putInt(FrSettings.KEY_SETTINGS_VERSION, FrSettings.SETTINGS_VERSION)
@@ -432,9 +467,9 @@ class FrUnified : Source() {
             item.copy(
                 id = item.id.copy(season = number),
                 title = if (number == 0) {
-                    "${item.title} — Épisodes spéciaux"
+                    L10n.t("${item.title} — Épisodes spéciaux", "${item.title} — Special episodes")
                 } else {
-                    "${item.title} — Saison $number"
+                    L10n.t("${item.title} — Saison $number", "${item.title} — Season $number")
                 },
             )
         }
@@ -477,8 +512,14 @@ class FrUnified : Source() {
     }
 
     class ContentTypeFilter(initialState: Int) : AnimeFilter.Select<String>(
-        "Catalogue affiché",
-        arrayOf("Mixte", "Films", "Séries", "Animés", "Stremio"),
+        L10n.t("Catalogue affiché", "Displayed catalog"),
+        arrayOf(
+            L10n.t("Mixte", "Mixed"),
+            L10n.t("Films", "Movies"),
+            L10n.t("Séries", "Series"),
+            L10n.t("Animés", "Anime"),
+            "Stremio",
+        ),
     ) {
         init {
             state = initialState.coerceIn(0, 4)
@@ -492,7 +533,7 @@ class FrUnified : Source() {
         private val catalogs: List<StremioCatalog.Catalog>,
         selectedKey: String,
     ) : AnimeFilter.Select<String>(
-        "Catalogue Stremio (chaque entrée du manifest)",
+        L10n.t("Catalogue Stremio (chaque entrée du manifest)", "Stremio catalog (every manifest entry)"),
         catalogs.map(StremioCatalog.Catalog::label).toTypedArray(),
     ) {
         init {
@@ -508,8 +549,11 @@ class FrUnified : Source() {
         val extraName: String,
         extra: StremioCatalog.Extra,
     ) : AnimeFilter.Select<String>(
-        "Option Stremio · ${extraName.replaceFirstChar(Char::titlecase)}",
-        (if (extra.required) extra.options else listOf("Tous") + extra.options).toTypedArray(),
+        L10n.t(
+            "Option Stremio · ${extraName.replaceFirstChar(Char::titlecase)}",
+            "Stremio option · ${extraName.replaceFirstChar(Char::titlecase)}",
+        ),
+        (if (extra.required) extra.options else listOf(L10n.t("Tous", "All")) + extra.options).toTypedArray(),
     ) {
         private val extraValues = if (extra.required) extra.options else listOf("") + extra.options
         val value: String get() = extraValues.getOrNull(state).orEmpty()
@@ -542,7 +586,10 @@ class FrUnified : Source() {
             add(contentFilter)
             add(
                 AnimeFilter.Header(
-                    "Chaque catalogs[] est détecté automatiquement ; réinitialiser les filtres après un ajout.",
+                    L10n.t(
+                        "Chaque catalogs[] est détecté automatiquement ; réinitialiser les filtres après un ajout.",
+                        "Every catalogs[] entry is detected automatically; reset the filters after an addition.",
+                    ),
                 ),
             )
             add(StremioCatalogFilter(catalogs, selected.key))
@@ -552,7 +599,14 @@ class FrUnified : Source() {
                     !it.name.equals("skip", true)
             }
             if (extras.isNotEmpty()) {
-                add(AnimeFilter.Header("Après un changement de catalogue : Filtrer, puis Réinitialiser les filtres."))
+                add(
+                    AnimeFilter.Header(
+                        L10n.t(
+                            "Après un changement de catalogue : Filtrer, puis Réinitialiser les filtres.",
+                            "After changing catalog: Filter, then Reset the filters.",
+                        ),
+                    ),
+                )
                 extras.forEach { extra ->
                     add(StremioExtraFilter(selected.key, extra.name, extra))
                 }
@@ -671,13 +725,18 @@ class FrUnified : Source() {
     }
 
     private fun sourceSummary(): String = buildString {
-        append("Ordre de lecture : ")
+        append(L10n.t("Ordre de lecture : ", "Playback order: "))
         if (FrSettings.engineOrder == "stremio_first") {
-            append("Stremio puis Nuvio")
+            append(L10n.t("Stremio puis Nuvio", "Stremio then Nuvio"))
         } else {
-            append("Nuvio puis Stremio")
+            append(L10n.t("Nuvio puis Stremio", "Nuvio then Stremio"))
         }
-        append(". Les moteurs sont indépendants et le second sert de repli.")
+        append(
+            L10n.t(
+                ". Les moteurs sont indépendants et le second sert de repli.",
+                ". The engines are independent and the second one is a fallback.",
+            ),
+        )
     }
 
     // ------------------------------------------------------------- saisons
@@ -695,12 +754,17 @@ class FrUnified : Source() {
             return listOf(
                 SAnime.create().apply {
                     url = id.serialize()
-                    title = anime.title.takeIf(String::isNotBlank)?.let { "$it — Toutes les saisons" }
-                        ?: "Toutes les saisons"
+                    title = anime.title.takeIf(String::isNotBlank)?.let {
+                        L10n.t("$it — Toutes les saisons", "$it — All seasons")
+                    } ?: L10n.t("Toutes les saisons", "All seasons")
                     thumbnail_url = anime.thumbnail_url
                     background_url = anime.background_url
-                    description = "Toutes les saisons réunies dans une seule liste d'épisodes " +
-                        "(réglage « Fusionner les saisons »)."
+                    description = L10n.t(
+                        "Toutes les saisons réunies dans une seule liste d'épisodes " +
+                            "(réglage « Fusionner les saisons »).",
+                        "All seasons merged into a single episode list " +
+                            "(« Merged seasons » setting).",
+                    )
                     season_number = 1.0
                     status = anime.status
                     genre = anime.genre
@@ -723,7 +787,11 @@ class FrUnified : Source() {
             if (season.optInt("episode_count", 0) <= 0) return@mapNotNull null
             SAnime.create().apply {
                 url = id.copy(season = number).serialize()
-                this.title = if (number == 0) "$title — Épisodes spéciaux" else "$title — Saison $number"
+                this.title = if (number == 0) {
+                    L10n.t("$title — Épisodes spéciaux", "$title — Special episodes")
+                } else {
+                    L10n.t("$title — Saison $number", "$title — Season $number")
+                }
                 thumbnail_url = TmdbCatalog.image(season.optString("poster_path")) ?: anime.thumbnail_url
                 background_url = anime.background_url
                 description = season.optString("overview").takeIf(String::isNotBlank) ?: anime.description
@@ -748,9 +816,9 @@ class FrUnified : Source() {
             SAnime.create().apply {
                 url = id.copy(season = number).serialize()
                 title = if (number == 0) {
-                    "${anime.title} — Épisodes spéciaux"
+                    L10n.t("${anime.title} — Épisodes spéciaux", "${anime.title} — Special episodes")
                 } else {
-                    "${anime.title} — Saison $number"
+                    L10n.t("${anime.title} — Saison $number", "${anime.title} — Season $number")
                 }
                 thumbnail_url = anime.thumbnail_url
                 background_url = anime.background_url
@@ -794,7 +862,7 @@ class FrUnified : Source() {
             return listOf(
                 SEpisode.create().apply {
                     url = payload.serialize()
-                    name = "Film"
+                    name = L10n.t("Film", "Movie")
                     episode_number = 1F
                     scanlator = "FR Unifié"
                     summary = item.overview
@@ -869,11 +937,16 @@ class FrUnified : Source() {
                     val episodeName = episode.optString("name").takeIf(String::isNotBlank)
                     if (episodeName == null) "S$seasonNumber E$number" else "S$seasonNumber E$number — $episodeName"
                 } else {
-                    episode.optString("name").takeIf(String::isNotBlank)?.let { "Épisode $number — $it" }
-                        ?: "Épisode $number"
+                    episode.optString("name").takeIf(String::isNotBlank)
+                        ?.let { L10n.t("Épisode $number — $it", "Episode $number — $it") }
+                        ?: L10n.t("Épisode $number", "Episode $number")
                 }
                 episode_number = number.toFloat()
-                scanlator = if (seasonNumber == 0) "Spécial" else "Saison $seasonNumber"
+                scanlator = if (seasonNumber == 0) {
+                    L10n.t("Spécial", "Special")
+                } else {
+                    L10n.t("Saison $seasonNumber", "Season $seasonNumber")
+                }
                 summary = episode.optString("overview").takeIf(String::isNotBlank)
                 preview_url = TmdbCatalog.image(episode.optString("still_path"), "w500")
                 date_upload = parseDate(episode.optString("air_date"))
@@ -938,7 +1011,7 @@ class FrUnified : Source() {
             return listOf(
                 SEpisode.create().apply {
                     url = payload.serialize()
-                    name = "Film"
+                    name = L10n.t("Film", "Movie")
                     episode_number = 1F
                     scanlator = "Stremio / Nuvio"
                     summary = item?.overview
@@ -953,7 +1026,7 @@ class FrUnified : Source() {
             return listOf(
                 SEpisode.create().apply {
                     url = payload.serialize()
-                    name = "Flux TV"
+                    name = L10n.t("Flux TV", "TV stream")
                     episode_number = 1F
                     scanlator = "Stremio / Nuvio"
                 },
@@ -992,12 +1065,16 @@ class FrUnified : Source() {
                 url = payload.serialize()
                 val episodeTitle = video.optString("title").ifBlank { video.optString("name") }
                 name = if (episodeTitle.isBlank()) {
-                    "Épisode $episode"
+                    L10n.t("Épisode $episode", "Episode $episode")
                 } else {
-                    "Épisode $episode — $episodeTitle"
+                    L10n.t("Épisode $episode — $episodeTitle", "Episode $episode — $episodeTitle")
                 }
                 episode_number = episode.toFloat()
-                scanlator = if (season == 0) "Spécial" else "Saison $season"
+                scanlator = if (season == 0) {
+                    L10n.t("Spécial", "Special")
+                } else {
+                    L10n.t("Saison $season", "Season $season")
+                }
                 summary = video.optString("overview").ifBlank { video.optString("description") }
                     .takeIf(String::isNotBlank)
                 preview_url = video.optString("thumbnail").takeIf { it.startsWith("http") }
@@ -1049,7 +1126,7 @@ class FrUnified : Source() {
                 } else {
                     "S$season E$episode — $episodeTitle"
                 }
-                scanlator = "Saison $season"
+                scanlator = L10n.t("Saison $season", "Season $season")
                 summary = video.optString("overview").ifBlank { video.optString("description") }
                     .takeIf(String::isNotBlank)
                 preview_url = video.optString("thumbnail").takeIf { it.startsWith("http") }
@@ -1113,9 +1190,17 @@ class FrUnified : Source() {
         )
         SEpisode.create().apply {
             url = payload.serialize()
-            name = if (isMovie) "Film" else "Épisode $number"
+            name = if (isMovie) {
+                L10n.t("Film", "Movie")
+            } else {
+                L10n.t("Épisode $number", "Episode $number")
+            }
             episode_number = number.toFloat()
-            scanlator = if (isMovie) "Film animé" else "VF / VOSTFR"
+            scanlator = if (isMovie) {
+                L10n.t("Film animé", "Anime movie")
+            } else {
+                L10n.t("VF / VOSTFR", "FRENCH / SUBBED")
+            }
         }
     }.sortedByDescending { it.episode_number }
 
@@ -1224,311 +1309,270 @@ class FrUnified : Source() {
     // ---------------------------------------------------------- préférences
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) = with(screen) {
-        header("🎬 1 · CATALOGUES (films, séries, animés)")
-        switch(
-            FrSettings.KEY_USE_MAIN_CATALOGS,
-            true,
-            "Activer les catalogues principaux",
-            "TMDB + AniList + Jikan. Désactiver pour ne garder que le catalogue Stremio.",
+        header(L10n.t("🌍 1 · GÉNÉRAL", "🌍 1 · GENERAL"))
+        list(
+            FrSettings.KEY_UI_LANGUAGE,
+            L10n.FR,
+            L10n.t("Langue de l'application", "App language"),
+            L10n.UI_LANGUAGE_LABELS.values.toTypedArray(),
+            L10n.UI_LANGUAGE_LABELS.keys.toTypedArray(),
         )
-        switch(
-            FrSettings.KEY_USE_TMDB,
-            true,
-            "TMDB — films et séries",
-            "Catalogue général localisé (affiché par défaut).",
-        )
-        switch(
-            FrSettings.KEY_USE_ANIME,
-            true,
-            "AniList — animés",
-            "Catalogue d'animés avec titres français, romaji et anglais.",
-        )
-        switch(
-            FrSettings.KEY_USE_JIKAN,
-            true,
-            "Jikan / MyAnimeList — animés",
-            "Repli du catalogue animé et comptage des séries toujours en cours.",
-        )
-        switch(
-            FrSettings.KEY_USE_STREMIO_CATALOG,
-            true,
-            "Catalogue Stremio",
-            "Fiches, saisons et épisodes fournis par les addons Stremio.",
-        )
-        action(
-            "action_stremio_catalog",
-            "Choisir la rangée du catalogue Stremio",
-            "Charge les manifests actifs puis mémorise la rangée sélectionnée.",
-        ) { showStremioCatalogPicker(context) }
         list(
             FrSettings.KEY_POPULAR,
             "mixed",
-            "Onglet d'accueil (Populaires / Derniers)",
-            arrayOf("Mixte", "Films", "Séries", "Animés", "Stremio"),
+            L10n.t("Onglet d'accueil (Populaires / Derniers)", "Home tab (Popular / Latest)"),
+            arrayOf(
+                L10n.t("Mixte", "Mixed"),
+                L10n.t("Films", "Movies"),
+                L10n.t("Séries", "Series"),
+                L10n.t("Animés", "Anime"),
+                "Stremio",
+            ),
             arrayOf("mixed", "movies", "series", "anime", "stremio"),
+        )
+        action(
+            "action_catalogs",
+            L10n.t("Catalogues (TMDB, AniList, Jikan, Stremio)", "Catalogs (TMDB, AniList, Jikan, Stremio)"),
+            L10n.t(
+                "Choix multiple des catalogues affichés à l'accueil.",
+                "Multi-select of the catalogs shown on the home screen.",
+            ),
+        ) { showCatalogsPopup(context) }
+        action(
+            "action_stremio_catalog",
+            L10n.t("Rangée du catalogue Stremio", "Stremio catalog row"),
+            L10n.t(
+                "Charge les manifests actifs puis mémorise la rangée sélectionnée.",
+                "Loads the active manifests and remembers the selected row.",
+            ),
+        ) { showStremioCatalogPicker(context) }
+        action(
+            "action_catalog_languages",
+            L10n.t("Langues des catalogues", "Catalog languages"),
+            L10n.t(
+                "Choix multiple : TMDB et les catalogues Stremio localisés (🇫🇷 🇬 🇪🇸…).",
+                "Multi-select: TMDB and localized Stremio catalogs (🇫🇷 🇧 🇪…).",
+            ),
+        ) { showCatalogLanguagePicker(context) }
+        list(
+            FrSettings.KEY_SERIES_LAYOUT,
+            "classic",
+            L10n.t("Organisation des saisons d'une série", "How series seasons are organized"),
+            arrayOf(
+                L10n.t(
+                    "Classique — la fiche, puis la liste des saisons",
+                    "Classic — the entry, then the season list",
+                ),
+                L10n.t(
+                    "Fusionnées — toutes les saisons dans une seule fiche",
+                    "Merged — all seasons in a single entry",
+                ),
+                L10n.t(
+                    "Séparées — une fiche par saison dès le catalogue",
+                    "Split — one entry per season in the catalog",
+                ),
+            ),
+            arrayOf("classic", "merged", "split"),
         )
         switch(
             FrSettings.KEY_QUICK_SEARCH,
             false,
-            "Recherche rapide",
-            "N'interroge que TMDB et AniList (bornés à 6 s) : pas de repli Jikan ni d'addons Stremio en mode mixte.",
-        )
-        action(
-            "action_catalog_languages",
-            "Langues des catalogues",
-            "Choix multiple : TMDB et les catalogues Stremio localisés (🇫🇷 🇬🇧 🇪🇸…).",
-        ) { showCatalogLanguagePicker(context) }
-        list(
-            FrSettings.KEY_CATALOG_PRIMARY_LANGUAGE,
-            "fr-FR",
-            "Langue principale",
-            FrSettings.CATALOG_LANGUAGE_LABELS.map { (code, label) ->
-                FrSettings.flagLabel(code, label)
-            }.toTypedArray(),
-            FrSettings.CATALOG_LANGUAGE_LABELS.keys.toTypedArray(),
-        )
-        list(
-            FrSettings.KEY_SERIES_LAYOUT,
-            "classic",
-            "Organisation des saisons d'une série",
-            arrayOf(
-                "Classique — la fiche, puis la liste des saisons",
-                "Fusionnées — toutes les saisons dans une seule fiche",
-                "Séparées — une fiche par saison dès le catalogue",
+            L10n.t("Recherche rapide", "Quick search"),
+            L10n.t(
+                "N'interroge que TMDB et AniList (bornés à 6 s) : pas de repli Jikan ni d'addons " +
+                    "Stremio en mode mixte.",
+                "Only queries TMDB and AniList (6 s cap): no Jikan fallback nor Stremio addons in mixed mode.",
             ),
-            arrayOf("classic", "merged", "split"),
-        )
-        edit(
-            FrSettings.KEY_TMDB,
-            FrSettings.DEFAULT_TMDB_KEY,
-            "Clé API TMDB",
-            "Laisser la clé proposée ou coller votre propre clé v3.",
-            multiline = false,
         )
 
-        header("🧭 2 · LECTURE (ordre des moteurs et des flux)")
+        header(L10n.t("🧭 2 · LECTURE (moteurs et flux)", "🧭 2 · PLAYBACK (engines and streams)"))
         list(
             FrSettings.KEY_ENGINE_ORDER,
             "nuvio_first",
-            "Ordre des moteurs de lecture",
-            arrayOf("Nuvio d'abord, Stremio en secours", "Stremio d'abord, Nuvio en secours"),
+            L10n.t("Ordre des moteurs de lecture", "Playback engine order"),
+            arrayOf(
+                L10n.t("Nuvio d'abord, Stremio en secours", "Nuvio first, Stremio as fallback"),
+                L10n.t("Stremio d'abord, Nuvio en secours", "Stremio first, Nuvio as fallback"),
+            ),
             arrayOf("nuvio_first", "stremio_first"),
         )
         action(
             "action_stream_order",
-            "Classer langues et qualités avec les flèches",
-            "VF avant VOSTFR, 1080p avant 4K… Le premier critère satisfait décide de l'ordre des flux.",
+            L10n.t("Classer les flux (langues et qualités)", "Rank streams (languages and qualities)"),
+            L10n.t(
+                "Flèches ⬆️️ : VF avant VOSTFR, 1080p avant 4K… Ajoutez vos langues et qualités.",
+                "Arrows ⬆️⬇️: VF before VOSTFR, 1080p before 4K… Add your own languages and qualities.",
+            ),
         ) { showStreamOrderDialog(context) }
-        edit(
-            FrSettings.KEY_STREAM_ORDER,
-            FrSettings.DEFAULT_STREAM_ORDER.joinToString("\n"),
-            "Ordre enregistré des critères (texte)",
-            "Généré par le classement à flèches : VF, VFF, VFQ, MULTI, VOSTFR, VO, 1080p, 4K, 720p…",
+        switch(
+            FrSettings.KEY_USE_SUBS,
+            true,
+            L10n.t("Sous-titres externes", "External subtitles"),
+            L10n.t(
+                "Inclut l'addon OpenSubtitles v3 ; langues réglables ci-dessous.",
+                "Includes the OpenSubtitles v3 addon; languages below.",
+            ),
         )
+        action(
+            "action_sub_langs",
+            L10n.t("Langues des sous-titres", "Subtitle languages"),
+            L10n.t(
+                "Codes séparés par des virgules : fre, fra, fr, eng, en…",
+                "Comma-separated codes: fre, fra, fr, eng, en…",
+            ),
+        ) { showSubtitleLangsPopup(context) }
 
-        header("📺 3 · SOURCES NUVIO (sites de streaming)")
+        header(L10n.t("📺 3 · SOURCES NUVIO (sites de streaming)", "📺 3 · NUVIO SOURCES (streaming sites)"))
         switch(
             FrSettings.KEY_USE_NUVIO,
             true,
-            "Activer les sources Nuvio",
-            "Scrapeurs intégrés ; chaque site reste sélectionnable ci-dessous.",
+            L10n.t("Activer les sources Nuvio", "Enable Nuvio sources"),
+            L10n.t(
+                "Scrapeurs intégrés ; chaque site reste sélectionnable ci-dessous.",
+                "Built-in scrapers; every site stays selectable below.",
+            ),
         )
         action(
             "action_nuvio_sources",
-            "Choisir les sources (avec drapeaux)",
-            "Active ou désactive chaque site. Le drapeau indique sa langue 🇫🇷 🇹🇷 🇯🇵…",
+            L10n.t("Choisir les sources", "Choose the sources"),
+            L10n.t(
+                "Drapeau = langue, dépôt affiché comme dans NuviO. Appuyez longuement pour supprimer un dépôt.",
+                "Flag = language, repo shown like in NuviO. Long-press to remove a repository.",
+            ),
         ) { showNuvioPicker(context) }
         action(
             "action_nuvio_order",
-            "Classer les sources avec les flèches",
-            "Met une source en haut ou en bas (⬆️ ⬇️) au lieu d'écrire la liste des noms.",
+            L10n.t("Classer les sources (flèches)", "Rank the sources (arrows)"),
+            L10n.t(
+                "Met une source en haut ou en bas (⬆️️) au lieu d'écrire la liste des noms.",
+                "Move a source to the top or bottom (⬆️️) instead of writing the list of names.",
+            ),
         ) { showNuvioOrderDialog(context) }
         action(
-            "action_nuvio_languages",
-            "Langues des serveurs",
-            "Filtre les sites exécutés ; le sélecteur affiche tout le contenu des dépôts.",
-        ) { showNuvioLanguagePicker(context) }
-        switch(
-            FrSettings.KEY_VERIFY_STREAM_CONTENT,
-            true,
-            "Vérifier les liens (anti-popups)",
-            "Sonde à la découverte, puis revérifie chaque lien Nuvio au clic avant lecture.",
-        )
+            "action_nuvio_add",
+            L10n.t("Ajouter un dépôt Nuvio", "Add a Nuvio repository"),
+            L10n.t(
+                "Collez ici l'URL d'un manifest (scrapers[]) Nuvio.",
+                "Paste the URL of a Nuvio manifest (scrapers[]) here.",
+            ),
+        ) { showExternalSourceDialog(context, ExternalSourceImporter.Kind.NUVIO) }
+        action(
+            "action_nuvio_search_options",
+            L10n.t("Options de recherche des sources", "Source search options"),
+            L10n.t(
+                "Parallélisme, flux maximum par site, vérification anti-popups, mise à jour automatique.",
+                "Concurrency, max streams per site, anti-popup verification, automatic updates.",
+            ),
+        ) { showNuvioOptionsPopup(context) }
         action(
             "action_nuvio_diagnostic",
-            "Diagnostic des sources",
-            "Teste Rhino et jusqu'à cinq sources actives sur un vrai titre.",
-        ) { showNuvioDiagnostic(context) }
-        action(
-            "action_nuvio_add",
-            "Ajouter un dépôt Nuvio",
-            "Collez ici l'URL d'un manifest (scrapers[]) Nuvio.",
-        ) { showExternalSourceDialog(context, ExternalSourceImporter.Kind.NUVIO) }
-        list(
-            FrSettings.KEY_NUVIO_CONCURRENCY,
-            "3",
-            "Sites interrogés en même temps",
-            arrayOf("2 — prudent", "3 — recommandé", "4 — rapide", "6 — parallèle"),
-            arrayOf("2", "3", "4", "6"),
-        )
-        list(
-            FrSettings.KEY_NUVIO_SEARCH_MODE,
-            "fast",
-            "Mode de recherche",
-            arrayOf(
-                "Rapide — parallèle, s'arrête à la première VF",
-                "Équilibré — parallèle, deux sites et la VF",
-                "Complet — tous les sites actifs en parallèle",
+            L10n.t("Diagnostic des sources", "Source diagnostics"),
+            L10n.t(
+                "Teste Rhino et jusqu'à cinq sources actives sur un vrai titre.",
+                "Tests Rhino and up to five active sources on a real title.",
             ),
-            arrayOf("fast", "balanced", "complete"),
-        )
-        list(
-            FrSettings.KEY_NUVIO_MAX,
-            "4",
-            "Flux maximum par site",
-            arrayOf("2", "4", "8", "12", "Illimité"),
-            arrayOf("2", "4", "8", "12", "0"),
-        )
-        edit(
-            FrSettings.KEY_NUVIO_ORDER,
-            FrSettings.RECOMMENDED_NUVIO_IDS.joinToString("\n"),
-            "Ordre enregistré des sources (texte)",
-            "Généré par le classement à flèches. Modifiable ici dans les cas avancés.",
-        )
-        switch(
-            FrSettings.KEY_NUVIO_AUTO_UPDATE,
-            true,
-            "Mise à jour automatique des sources",
-            "Relit les dépôts et retélécharge les scripts modifiés une fois par jour, au lancement.",
-        )
-        action(
-            "action_nuvio_update",
-            "Mettre à jour les sources maintenant",
-            "Force la relecture des dépôts Nuvio et le rafraîchissement de tous les scripts.",
-        ) { runNuvioUpdate(context) }
+        ) { showNuvioDiagnostic(context) }
 
-        header("🧩 4 · STREMIO (addons)")
+        header(L10n.t("🧩 4 · STREMIO (addons)", "🧩 4 · STREMIO (addons)"))
         switch(
             FrSettings.KEY_USE_STREMIO,
             true,
-            "Lecture Stremio activée",
-            "Serveurs affichés même sans Nuvio, classés selon l'ordre choisi en section 2.",
+            L10n.t("Lecture Stremio activée", "Stremio playback enabled"),
+            L10n.t(
+                "Serveurs affichés même sans Nuvio, classés selon l'ordre choisi en section 2.",
+                "Servers shown even without Nuvio, ranked per the section 2 order.",
+            ),
         )
         action(
             "action_stremio_sources",
-            "Choisir les addons",
-            "Addons de catalogue, de métadonnées, de flux et de sous-titres.",
+            L10n.t("Choisir les addons", "Choose the addons"),
+            L10n.t(
+                "Addons de catalogue, de métadonnées, de flux et de sous-titres. Appuyez longuement pour supprimer.",
+                "Catalog, metadata, stream and subtitle addons. Long-press to remove.",
+            ),
         ) { showStremioPicker(context) }
         action(
             "action_stremio_add",
-            "Ajouter un addon Stremio",
-            "Accepte un manifest d'addon (flux, catalogue, meta ou sous-titres).",
+            L10n.t("Ajouter un addon Stremio", "Add a Stremio addon"),
+            L10n.t(
+                "Accepte un manifest d'addon (flux, catalogue, meta ou sous-titres).",
+                "Accepts an addon manifest (streams, catalog, meta or subtitles).",
+            ),
         ) { showExternalSourceDialog(context, ExternalSourceImporter.Kind.STREMIO) }
-        switch(
-            FrSettings.KEY_STREMIO_AUTO_UPDATE,
-            true,
-            "Mise à jour automatique quotidienne",
-            "Recharge les manifests et leurs catalogues une fois par jour.",
-        )
         action(
-            "action_stremio_update",
-            "Mettre à jour les addons maintenant",
-            "Force le rechargement des manifests et affiche un bilan.",
-        ) { runStremioUpdate(context) }
-        list(
-            FrSettings.KEY_STREMIO_MAX,
-            "8",
-            "Flux maximum Stremio",
-            arrayOf("4", "8", "12", "20", "Illimité"),
-            arrayOf("4", "8", "12", "20", "0"),
-        )
-        switch(FrSettings.KEY_USE_SUBS, true, "Sous-titres externes", "Inclut l'addon OpenSubtitles v3")
-        edit(
-            FrSettings.KEY_SUB_LANGS,
-            "fre,fra,fr,eng,en",
-            "Langues des sous-titres (texte)",
-            "Codes séparés par des virgules : fre, fra, fr, eng, en…",
-            multiline = false,
-        )
+            "action_stremio_options",
+            L10n.t("Options Stremio", "Stremio options"),
+            L10n.t(
+                "Flux maximum, mise à jour automatique des manifests.",
+                "Maximum streams, automatic manifest updates.",
+            ),
+        ) { showStremioOptionsPopup(context) }
 
-        header("🌐 5 · RÉSEAU — DNS personnalisé")
+        header(L10n.t("🌐 5 · RÉSEAU (DNS)", "🌐 5 · NETWORK (DNS)"))
         action(
             "action_dns_presets",
-            "Préréglages DNS en un clic",
-            "Cloudflare, Google, Quad9, AdGuard, téléphone ou personnalisé.",
+            L10n.t("Préréglages DNS en un clic", "One-click DNS presets"),
+            L10n.t(
+                "Cloudflare, Google, Quad9, AdGuard, téléphone ou personnalisé.",
+                "Cloudflare, Google, Quad9, AdGuard, phone or custom.",
+            ),
         ) { showDnsPresetDialog(context) }
-        edit(
-            FrSettings.KEY_DNS_HOSTS,
-            "",
-            "DNS personnalisé de l'extension",
-            "Une adresse par ligne : 1.1.1.1, 8.8.8.8, 9.9.9.9 ou URL DoH " +
-                "(https://1.1.1.1/dns-query). Vide = DNS de l'appareil. DoH d'abord, puis UDP 53.",
-        )
         action(
-            "action_dns_test",
-            "Tester la résolution DNS",
-            "Vérifie les domaines (catalogues, dépôts, sources) en DoH puis UDP.",
-        ) { showDnsTestDialog(context) }
-        header("🛠️ 6 · AVANCÉ (en-têtes et clés)")
-        edit(
-            FrSettings.KEY_TOKENS,
-            "",
-            "Clés API Nuvio (texte)",
-            "Une ligne NOM=valeur, injectée dans process.env des providers.",
-        )
-        edit(
-            FrSettings.KEY_UA,
-            FrSettings.DEFAULT_USER_AGENT,
-            "User-Agent (texte)",
-            "User-Agent des requêtes des sources et des sondes.",
-            multiline = false,
-        )
-        edit(
-            FrSettings.KEY_REFERER,
-            "https://www.google.com/",
-            "Referer par défaut (texte)",
-            "Referer HTTP utilisé par les sources.",
-            multiline = false,
-        )
-        edit(
-            FrSettings.KEY_COOKIES,
-            "",
-            "Cookies optionnels (texte)",
-            "Cookies pour les domaines protégés.",
-        )
+            "action_dns_settings",
+            L10n.t("Réglages DNS avancés", "Advanced DNS settings"),
+            L10n.t(
+                "DNS personnalisé (DoH ou UDP 53) et test de la résolution.",
+                "Custom DNS (DoH or UDP 53) and resolution test.",
+            ),
+        ) { showDnsSettingsPopup(context) }
 
-        header("💾 7 · SAUVEGARDE ET RESTAURATION")
+        header(L10n.t("🛠️ 6 · AVANCÉ", "🛠️ 6 · ADVANCED"))
+        action(
+            "action_advanced",
+            L10n.t("Paramètres avancés", "Advanced settings"),
+            L10n.t(
+                "Clé API TMDB, clés API des sources, User-Agent, Referer et cookies.",
+                "TMDB API key, source API keys, User-Agent, Referer and cookies.",
+            ),
+        ) { showAdvancedPopup(context) }
+
+        header(L10n.t("💾 7 · SAUVEGARDE ET RESTAURATION", "💾 7 · BACKUP AND RESTORE"))
         action(
             "action_backup_export",
-            "Créer une sauvegarde",
-            "Copie tous les réglages dans le presse-papiers au format JSON.",
+            L10n.t("Créer une sauvegarde", "Create a backup"),
+            L10n.t(
+                "Copier, partager vers un dossier de votre choix, ou enregistrer dans Téléchargements.",
+                "Copy, share to a folder of your choice, or save to Downloads.",
+            ),
         ) { exportBackup(context) }
         action(
             "action_backup_restore",
-            "Restaurer une sauvegarde",
-            "Collez le JSON créé par FR Unifié ; les caches ne sont pas importés.",
-        ) { showBackupRestoreDialog(context) }
-        edit(
-            FrSettings.KEY_BACKUP_URL,
-            "",
-            "Lien HTTPS du backup",
-            "Lien direct vers un JSON de sauvegarde (GitHub Gist brut, serveur personnel…).",
-            multiline = false,
-        )
-        switch(
-            FrSettings.KEY_BACKUP_AUTO_RESTORE,
-            false,
-            "Restaurer automatiquement depuis le lien",
-            "Vérifie le lien au lancement, au plus une fois par jour. Désactivé par défaut.",
-        )
+            L10n.t("Restaurer une sauvegarde", "Restore a backup"),
+            L10n.t(
+                "Choisir un fichier, coller le JSON, ou synchroniser depuis un lien.",
+                "Choose a file, paste the JSON, or sync from a link.",
+            ),
+        ) { showBackupImportDialog(context) }
+        action(
+            "action_backup_sync",
+            L10n.t("Synchronisation par lien (facultatif)", "Sync by link (optional)"),
+            L10n.t(
+                "Lien HTTPS vers un JSON de sauvegarde, restauré chaque jour au lancement.",
+                "HTTPS link to a backup JSON, restored daily at startup.",
+            ),
+        ) { showBackupSyncPopup(context) }
 
-        header("ℹ️ 8 · AIDE")
+        header(L10n.t("ℹ️ 8 · AIDE", "ℹ️ 8 · HELP"))
         action(
             "action_guide",
-            "Guide des réglages",
-            "Ouvrir un résumé lisible de toutes les options et de leurs effets.",
+            L10n.t("Guide des réglages", "Settings guide"),
+            L10n.t(
+                "Ouvrir un résumé lisible de toutes les options et de leurs effets.",
+                "Open a readable summary of every option and its effect.",
+            ),
         ) { showGuideDialog(context) }
     }
+
 
     /** Séparateur de section : simple, grisé, avec emoji pour une lecture rapide. */
     private fun PreferenceScreen.header(title: String) {
@@ -1543,46 +1587,86 @@ class FrUnified : Source() {
 
     private fun showGuideDialog(dialogContext: Context) {
         val guide = buildString {
-            appendLine("🎬 1 · CATALOGUES")
+            appendLine(L10n.t("🌍 1 · GÉNÉRAL", "🌍 1 · GENERAL"))
             appendLine(
-                "Sélectionnez ce que vous voyez à l'accueil : TMDB (films/séries), AniList/Jikan (animés), Stremio. " +
-                    "La langue principale pilote les fiches TMDB. " +
-                    "« Recherche rapide » ne consulte que TMDB et AniList pour répondre en quelques secondes.",
+                L10n.t(
+                    "La langue de l'application change tous les libellés (français ou anglais). " +
+                        "« Catalogues » choisit ce que vous voyez à l'accueil : TMDB (films/séries), " +
+                        "AniList/Jikan (animés), Stremio. « Recherche rapide » ne consulte que TMDB et AniList.",
+                    "The app language changes every label (French or English). " +
+                        "« Catalogs » picks what you see at home: TMDB (movies/series), AniList/Jikan " +
+                        "(anime), Stremio. « Quick search » only queries TMDB and AniList.",
+                ),
             )
             appendLine()
-            appendLine("🧭 2 · LECTURE")
+            appendLine(L10n.t("🧭 2 · LECTURE", "🧭 2 · PLAYBACK"))
             appendLine(
-                "« Nuvio d'abord » essaie d'abord les sites de streaming (souvent la VF), puis Stremio en secours " +
-                    "— ou l'inverse. Le classement à flèches des langues et qualités (VF avant VOSTFR, " +
-                    "1080p avant 4K…) ordonne les flux : chaque flux s'affiche « (VF) 1080p · source · moteur » " +
-                    "et chaque serveur « Nuvio · source : VF, VOSTFR ».",
+                L10n.t(
+                    "« Nuvio d'abord » essaie d'abord les sites de streaming (souvent la VF), puis " +
+                        "Stremio en secours " +
+                        "— ou l'inverse. Le classement des flux (langues et qualités, flèches ⬆️️) " +
+                        "ordonne tout : chaque flux s'affiche « (VF) 1080p · source · moteur » et chaque serveur " +
+                        "« Nuvio · source : VF, VOSTFR ».",
+                    "« Nuvio first » tries the streaming sites first (often the French dub), then Stremio " +
+                        "— or the reverse. The stream ranking (languages and qualities, arrows ⬆️️) orders " +
+                        "everything: each stream shows « (VF) 1080p · source · engine » and each server " +
+                        "« Nuvio · source: VF, VOSTFR ».",
+                ),
             )
             appendLine()
-            appendLine("📺 3 · SOURCES NUVIO")
+            appendLine(L10n.t("📺 3 · SOURCES NUVIO", "📺 3 · NUVIO SOURCES"))
             appendLine(
-                "Choisissez les sites activés (drapeau = langue), puis classez-les avec les flèches : la première " +
-                    "source est essayée en premier. Tous les sites partent en parallèle (2 à 6 à la fois). " +
-                    "« Vérifier les liens » sonde à la découverte puis revérifie au clic avant lecture. " +
-                    "La mise à jour automatique relit les dépôts une fois par jour.",
+                L10n.t(
+                    "Choisissez les sites activés (drapeau = langue, dépôt affiché comme dans NuviO) puis " +
+                        "classez-les avec les flèches : la première source est essayée en premier. " +
+                        "Tous les sites partent en parallèle. Appuyez longuement sur un site pour supprimer " +
+                        "son dépôt. « Options de recherche » : parallélisme, flux maximum par site, " +
+                        "vérification anti-popups, mise à jour automatique (une fois par jour).",
+                    "Choose the active sites (flag = language, repo shown like in NuviO) then rank them " +
+                        "with the arrows: the first source is tried first. All sites run in parallel. " +
+                        "Long-press a site to remove its repository. « Source search options »: concurrency, " +
+                        "max streams per site, anti-popup verification, automatic updates (once a day).",
+                ),
             )
             appendLine()
-            appendLine("🧩 4 · STREMIO")
+            appendLine(L10n.t("🧩 4 · STREMIO", "🧩 4 · STREMIO"))
             appendLine(
-                "Les addons fournissent catalogues et serveurs. Le chargement se fait au clic ; " +
-                    "un addon lent ne bloque plus les autres.",
+                L10n.t(
+                    "Les addons fournissent catalogues et serveurs. Le chargement se fait au clic ; " +
+                        "un addon lent ne bloque plus les autres. Appuyez longuement pour supprimer un addon.",
+                    "Addons provide catalogs and servers. Loading happens on click; a slow addon no longer " +
+                        "blocks the others. Long-press to remove an addon.",
+                ),
             )
             appendLine()
-            appendLine("🌐 5 · RÉSEAU")
+            appendLine(L10n.t("🌐 5 · RÉSEAU", "🌐 5 · NETWORK"))
             appendLine(
-                "Le DNS personnalisé utilise d'abord le DoH (HTTPS, ex. 1.1.1.1) puis UDP 53, avec repli " +
-                    "sur le DNS du téléphone. Il s'applique aux catalogues, manifests, sources et sondes. " +
-                    "La lecture finale reste gérée par Aniyomi.",
+                L10n.t(
+                    "Le DNS personnalisé utilise d'abord le DoH (HTTPS, ex. 1.1.1.1) puis UDP 53, avec repli " +
+                        "sur le DNS du téléphone. Il s'applique aux catalogues, manifests, sources et sondes. " +
+                        "La lecture finale reste gérée par Aniyomi.",
+                    "Custom DNS uses DoH first (HTTPS, e.g. 1.1.1.1), then UDP 53, falling back to the phone " +
+                        "DNS. It applies to catalogs, manifests, sources and probes. " +
+                            "Final playback stays with Aniyomi.",
+                ),
+            )
+            appendLine()
+            appendLine(L10n.t("💾 7 · SAUVEGARDE", "💾 7 · BACKUP"))
+            appendLine(
+                L10n.t(
+                    "Créez une sauvegarde en la copiant, en la partageant vers le dossier ou l'application de " +
+                        "votre choix, ou en l'enregistrant dans Téléchargements. Restauration depuis un fichier, " +
+                        "un texte collé, ou un lien HTTPS facultatif (synchronisation quotidienne).",
+                    "Create a backup by copying it, sharing it to the folder or app of your choice, or saving " +
+                        "it to Downloads. Restore from a file, pasted text, or an optional HTTPS link " +
+                        "(daily sync).",
+                ),
             )
         }
         AlertDialog.Builder(dialogContext)
-            .setTitle("Guide des réglages")
+            .setTitle(L10n.t("Guide des réglages", "Settings guide"))
             .setMessage(guide)
-            .setPositiveButton("Fermer", null)
+            .setPositiveButton(L10n.t("Fermer", "Close"), null)
             .show()
     }
 
@@ -1592,28 +1676,80 @@ class FrUnified : Source() {
             "🔎 Google — 8.8.8.8",
             "🛡️ Quad9 — 9.9.9.9",
             "🚫 AdGuard — 94.140.14.14",
-            "📱 Téléphone — DNS du système",
-            "✏️ Personnalisé",
+            L10n.t("📱 Téléphone — DNS du système", "📱 Phone — system DNS"),
+            L10n.t("✏️ Personnalisé…", "✏️ Custom…"),
         )
         val values = arrayOf("1.1.1.1", "8.8.8.8", "9.9.9.9", "94.140.14.14", "", null)
         AlertDialog.Builder(dialogContext)
-            .setTitle("Choisir le DNS")
+            .setTitle(L10n.t("Choisir le DNS", "Choose the DNS"))
             .setItems(labels) { _, index ->
                 val value = values[index]
                 if (value == null) {
-                    editDnsFromContext(dialogContext)
+                    showDnsSettingsPopup(dialogContext)
                 } else {
                     preferences.edit().putString(FrSettings.KEY_DNS_HOSTS, value).commit()
                     FrDns.clearCache()
-                    displayToast(if (value.isBlank()) "DNS du téléphone activé" else "DNS activé : $value")
+                    displayToast(
+                        if (value.isBlank()) {
+                            L10n.t("DNS du téléphone activé", "Phone DNS enabled")
+                        } else {
+                            L10n.t("DNS activé : $value", "DNS enabled: $value")
+                        },
+                    )
                 }
             }
-            .setNegativeButton("Annuler", null)
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .show()
+    }
+
+    /** Popup « Réglages DNS avancés » : champ personnalisé + test de résolution. */
+    private fun showDnsSettingsPopup(dialogContext: Context) {
+        val density = dialogContext.resources.displayMetrics.density
+        val padding = (density * 12).toInt()
+        val container = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
+        val input = EditText(dialogContext).apply {
+            setText(FrSettings.dnsHosts.joinToString("\n"))
+            hint = "1.1.1.1 / 8.8.8.8 / https://1.1.1.1/dns-query"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 2
+        }
+        val testButton = Button(dialogContext).apply {
+            text = L10n.t("Tester la résolution DNS", "Test DNS resolution")
+            setOnClickListener { showDnsTestDialog(dialogContext) }
+        }
+        container.addView(
+            TextView(dialogContext).apply {
+                text = L10n.t(
+                    "Une adresse par ligne (1.1.1.1, 8.8.8.8 ou URL https://…/dns-query). " +
+                        "Vide = DNS de l'appareil. DoH d'abord, puis UDP 53.",
+                    "One address per line (1.1.1.1, 8.8.8.8 or https://…/dns-query URL). " +
+                        "Empty = device DNS. DoH first, then UDP 53.",
+                )
+                textSize = 13f
+                setPadding(0, 0, 0, (density * 8).toInt())
+            },
+        )
+        container.addView(input)
+        container.addView(testButton)
+        AlertDialog.Builder(dialogContext)
+            .setTitle(L10n.t("Réglages DNS avancés", "Advanced DNS settings"))
+            .setView(container)
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
+                preferences.edit()
+                    .putString(FrSettings.KEY_DNS_HOSTS, input.text.toString().trim())
+                    .commit()
+                FrDns.clearCache()
+                displayToast(L10n.t("DNS enregistré", "DNS saved"))
+            }
             .show()
     }
 
     private fun showDnsTestDialog(dialogContext: Context) {
-        displayToast("Test DNS en cours…", Toast.LENGTH_LONG)
+        displayToast(L10n.t("Test DNS en cours…", "DNS test in progress…"), Toast.LENGTH_LONG)
         settingsScope.launch {
             val hosts = buildList {
                 add("api.themoviedb.org")
@@ -1664,37 +1800,15 @@ class FrUnified : Source() {
             }
             handler.post {
                 AlertDialog.Builder(dialogContext)
-                    .setTitle("Test DNS")
+                    .setTitle(L10n.t("Test DNS", "DNS test"))
                     .setMessage(report)
-                    .setNegativeButton("Fermer", null)
-                    .setPositiveButton("Modifier le DNS") { _, _ -> editDnsFromContext(dialogContext) }
+                    .setNegativeButton(L10n.t("Fermer", "Close"), null)
+                    .setPositiveButton(L10n.t("Modifier le DNS", "Edit DNS")) { _, _ ->
+                        showDnsSettingsPopup(dialogContext)
+                    }
                     .show()
             }
         }
-    }
-
-    private fun editDnsFromContext(dialogContext: Context) {
-        val input = EditText(dialogContext).apply {
-            setText(FrSettings.dnsHosts.joinToString("\n"))
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            minLines = 3
-        }
-        AlertDialog.Builder(dialogContext)
-            .setTitle("DNS personnalisé")
-            .setMessage(
-                "Une adresse par ligne (1.1.1.1, 8.8.8.8 ou URL https://…/dns-query). " +
-                    "Vide = DNS de l'appareil.",
-            )
-            .setView(input)
-            .setNegativeButton("Annuler", null)
-            .setPositiveButton("Enregistrer") { _, _ ->
-                preferences.edit()
-                    .putString(FrSettings.KEY_DNS_HOSTS, input.text.toString().trim())
-                    .commit()
-                FrDns.clearCache()
-                displayToast("DNS enregistré")
-            }
-            .show()
     }
 
     private data class SourceChoice(
@@ -1710,10 +1824,16 @@ class FrUnified : Source() {
         }.toTypedArray()
         val checked = BooleanArray(values.size) { values[it] in FrSettings.catalogLanguages }
         AlertDialog.Builder(dialogContext)
-            .setTitle("Langues des catalogues")
+            .setTitle(L10n.t("Langues des catalogues", "Catalog languages"))
+            .setMessage(
+                L10n.t(
+                    "La première langue cochée est la langue principale (fiches TMDB).",
+                    "The first checked language is the primary one (TMDB entries).",
+                ),
+            )
             .setMultiChoiceItems(labels, checked) { _, index, value -> checked[index] = value }
-            .setNegativeButton("Annuler", null)
-            .setPositiveButton("Enregistrer") { _, _ ->
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
                 val selected = values.indices.filter { checked[it] }.map { values[it] }
                     .ifEmpty { listOf(FrSettings.catalogLanguage) }
                 val primary = FrSettings.catalogLanguage.takeIf { it in selected } ?: selected.first()
@@ -1721,21 +1841,356 @@ class FrUnified : Source() {
                     .putString(FrSettings.KEY_CATALOG_LANGUAGE, selected.joinToString("\n"))
                     .putString(FrSettings.KEY_CATALOG_PRIMARY_LANGUAGE, primary)
                     .apply()
-                displayToast("Catalogues : ${selected.size} langue(s)")
+                displayToast(
+                    L10n.t(
+                        "Catalogues : ${selected.size} langue(s)",
+                        "Catalogs: ${selected.size} language(s)",
+                    ),
+                )
+            }
+            .show()
+    }
+
+    /** Popup « Catalogues » : les quatre catalogues en cases à cocher (remplace les quatre interrupteurs). */
+    private fun showCatalogsPopup(dialogContext: Context) {
+        val rows = listOf(
+            FrSettings.KEY_USE_TMDB to L10n.t(
+                "TMDB — films et séries",
+                "TMDB — movies and series",
+            ),
+            FrSettings.KEY_USE_ANIME to L10n.t(
+                "AniList — animés",
+                "AniList — anime",
+            ),
+            FrSettings.KEY_USE_JIKAN to L10n.t(
+                "Jikan / MyAnimeList — animés",
+                "Jikan / MyAnimeList — anime",
+            ),
+            FrSettings.KEY_USE_STREMIO_CATALOG to L10n.t("Catalogue Stremio", "Stremio catalog"),
+        )
+        val checks = BooleanArray(rows.size) {
+            when (rows[it].first) {
+                FrSettings.KEY_USE_TMDB -> FrSettings.useTmdbCatalog
+                FrSettings.KEY_USE_ANIME -> FrSettings.useAniListCatalog
+                FrSettings.KEY_USE_JIKAN -> FrSettings.useJikanCatalog
+                else -> FrSettings.useStremioCatalog
+            }
+        }
+        AlertDialog.Builder(dialogContext)
+            .setTitle(L10n.t("Catalogues", "Catalogs"))
+            .setMultiChoiceItems(rows.map { it.second }.toTypedArray(), checks) { _, index, value ->
+                checks[index] = value
+            }
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
+                preferences.edit()
+                    .putBoolean(FrSettings.KEY_USE_TMDB, checks[0])
+                    .putBoolean(FrSettings.KEY_USE_ANIME, checks[1])
+                    .putBoolean(FrSettings.KEY_USE_JIKAN, checks[2])
+                    .putBoolean(FrSettings.KEY_USE_STREMIO_CATALOG, checks[3])
+                    .apply()
+            }
+            .show()
+    }
+
+    /** Popup « Langues des sous-titres » : codes séparés par des virgules. */
+    private fun showSubtitleLangsPopup(dialogContext: Context) {
+        val input = EditText(dialogContext).apply {
+            setText(FrSettings.subtitleLangs.joinToString(","))
+            hint = "fre,fra,fr,eng,en"
+            inputType = InputType.TYPE_CLASS_TEXT
+            setSingleLine(false)
+            minLines = 2
+        }
+        AlertDialog.Builder(dialogContext)
+            .setTitle(L10n.t("Langues des sous-titres", "Subtitle languages"))
+            .setMessage(
+                L10n.t(
+                    "Codes séparés par des virgules : fre, fra, fr, eng, en… " +
+                        "Vide = tous les sous-titres.",
+                    "Comma-separated codes: fre, fra, fr, eng, en… " +
+                        "Empty = all subtitles.",
+                ),
+            )
+            .setView(input)
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
+                preferences.edit()
+                    .putString(FrSettings.KEY_SUB_LANGS, input.text.toString().trim())
+                    .apply()
+                displayToast(L10n.t("Langues des sous-titres enregistrées", "Subtitle languages saved"))
+            }
+            .show()
+    }
+
+    /**
+     * Une rangée de boutons radio dans un popup de réglages : le titre, les
+     * options (valeur, libellé) et la valeur courante ; [value] lit le choix.
+     */
+    private class RadioChoice(
+        private val dialogContext: Context,
+        container: LinearLayout,
+        title: String,
+        options: List<Pair<String, String>>,
+        current: String,
+    ) {
+        private val density = dialogContext.resources.displayMetrics.density
+        private val group = RadioGroup(dialogContext)
+        private val valueById = linkedMapOf<Int, String>()
+
+        init {
+            container.addView(
+                TextView(dialogContext).apply {
+                    text = title
+                    textSize = 13f
+                    setPadding(0, (density * 10).toInt(), 0, (density * 4).toInt())
+                },
+            )
+            group.orientation = RadioGroup.HORIZONTAL
+            options.forEach { (value, label) ->
+                val button = RadioButton(dialogContext).apply {
+                    text = label
+                    id = View.generateViewId()
+                    isChecked = value == current
+                }
+                valueById[button.id] = value
+                group.addView(button)
+            }
+            container.addView(group)
+        }
+
+        val value: String
+            get() = valueById[group.checkedRadioButtonId].orEmpty()
+    }
+
+    /**
+     * Popup « Options de recherche des sources » : regroupement des réglages
+     * difficiles (parallélisme, flux maximum par site, vérification anti-popups,
+     * mise à jour automatique) dans une seule fenêtre, comme dans Cloudstream.
+     */
+    private fun showNuvioOptionsPopup(dialogContext: Context) {
+        val density = dialogContext.resources.displayMetrics.density
+        val padding = (density * 12).toInt()
+        val container = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
+        val concurrency = RadioChoice(
+            dialogContext,
+            container,
+            L10n.t("Sites interrogés en même temps", "Sites queried at the same time"),
+            listOf(
+                "2" to L10n.t("2 — prudent", "2 — cautious"),
+                "3" to L10n.t("3 — recommandé", "3 — recommended"),
+                "4" to L10n.t("4 — rapide", "4 — fast"),
+                "6" to L10n.t("6 — parallèle", "6 — parallel"),
+            ),
+            FrSettings.nuvioConcurrency.toString(),
+        )
+        val maxPerSite = RadioChoice(
+            dialogContext,
+            container,
+            L10n.t("Flux maximum par site", "Maximum streams per site"),
+            listOf(
+                "2" to "2",
+                "4" to "4",
+                "8" to "8",
+                "12" to "12",
+                "0" to L10n.t("Illimité", "Unlimited"),
+            ),
+            FrSettings.nuvioMaxPerScraper.toString(),
+        )
+        val verifyCheck = CheckBox(dialogContext).apply {
+            text = L10n.t(
+                "Vérifier les liens (anti-popups) avant lecture",
+                "Verify links (anti-popup) before playback",
+            )
+            isChecked = FrSettings.verifyStreamContent
+        }
+        container.addView(verifyCheck)
+        val autoUpdateCheck = CheckBox(dialogContext).apply {
+            text = L10n.t(
+                "Mise à jour automatique des sources (1×/jour)",
+                "Automatic source updates (1×/day)",
+            )
+            isChecked = FrSettings.nuvioAutoUpdate
+        }
+        container.addView(autoUpdateCheck)
+        val updateNow = Button(dialogContext).apply {
+            text = L10n.t("Mettre à jour les sources maintenant", "Update the sources now")
+            setOnClickListener { runNuvioUpdate(dialogContext) }
+        }
+        container.addView(updateNow)
+        AlertDialog.Builder(dialogContext)
+            .setTitle(L10n.t("Options de recherche des sources", "Source search options"))
+            .setView(
+                ScrollView(dialogContext).apply {
+                    addView(container)
+                },
+            )
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
+                preferences.edit()
+                    .putString(FrSettings.KEY_NUVIO_CONCURRENCY, concurrency.value)
+                    .putString(FrSettings.KEY_NUVIO_MAX, maxPerSite.value)
+                    .putBoolean(FrSettings.KEY_VERIFY_STREAM_CONTENT, verifyCheck.isChecked)
+                    .putBoolean(FrSettings.KEY_NUVIO_AUTO_UPDATE, autoUpdateCheck.isChecked)
+                    .apply()
+                displayToast(
+                    L10n.t(
+                        "Options enregistrées (${concurrency.value} en parallèle)",
+                        "Options saved (${concurrency.value} in parallel)",
+                    ),
+                )
+            }
+            .show()
+    }
+
+    /** Popup « Options Stremio » : flux maximum + mise à jour automatique. */
+    private fun showStremioOptionsPopup(dialogContext: Context) {
+        val density = dialogContext.resources.displayMetrics.density
+        val padding = (density * 12).toInt()
+        val container = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
+        val maxStreams = RadioChoice(
+            dialogContext,
+            container,
+            L10n.t("Flux maximum Stremio (par addon)", "Maximum Stremio streams (per addon)"),
+            listOf(
+                "4" to "4",
+                "8" to "8",
+                "12" to "12",
+                "20" to "20",
+                "0" to L10n.t("Illimité", "Unlimited"),
+            ),
+            FrSettings.stremioMaxStreams.toString(),
+        )
+        val autoUpdateCheck = CheckBox(dialogContext).apply {
+            text = L10n.t(
+                "Mise à jour automatique des manifests (1×/jour)",
+                "Automatic manifest updates (1×/day)",
+            )
+            isChecked = FrSettings.stremioAutoUpdate
+        }
+        container.addView(autoUpdateCheck)
+        val updateNow = Button(dialogContext).apply {
+            text = L10n.t("Mettre à jour les addons maintenant", "Update the addons now")
+            setOnClickListener { runStremioUpdate(dialogContext) }
+        }
+        container.addView(updateNow)
+        AlertDialog.Builder(dialogContext)
+            .setTitle(L10n.t("Options Stremio", "Stremio options"))
+            .setView(
+                ScrollView(dialogContext).apply {
+                    addView(container)
+                },
+            )
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
+                preferences.edit()
+                    .putString(FrSettings.KEY_STREMIO_MAX, maxStreams.value)
+                    .putBoolean(FrSettings.KEY_STREMIO_AUTO_UPDATE, autoUpdateCheck.isChecked)
+                    .apply()
+                displayToast(L10n.t("Options Stremio enregistrées", "Stremio options saved"))
+            }
+            .show()
+    }
+
+    /** Popup « Paramètres avancés » : clés et en-têtes (les réglages les plus techniques). */
+    private fun showAdvancedPopup(dialogContext: Context) {
+        val density = dialogContext.resources.displayMetrics.density
+        val padding = (density * 12).toInt()
+        val container = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
+        fun caption(text: String) {
+            addView(
+                TextView(dialogContext).apply {
+                    this.text = text
+                    textSize = 12f
+                    setPadding(0, (density * 8).toInt(), 0, (density * 2).toInt())
+                },
+            )
+        }
+        fun field(hint: String, initial: String, minLines: Int = 1): EditText =
+            EditText(dialogContext).apply {
+                this.hint = hint
+                setText(initial)
+                inputType = InputType.TYPE_CLASS_TEXT or if (minLines > 1) {
+                    InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                } else {
+                    0
+                }
+                if (minLines > 1) this.minLines = minLines
+            }
+        caption(
+            L10n.t(
+                "Clé API TMDB (laisser la clé proposée ou la vôtre)",
+                "TMDB API key (keep the suggested one or yours)",
+            ),
+        )
+        val tmdb = field("f3d7…", FrSettings.tmdbApiKey)
+        container.addView(tmdb)
+        caption(
+            L10n.t(
+                "Clés API des sources (une ligne NOM=valeur, injectée dans process.env)",
+                "Source API keys (one line NAME=value, injected into process.env)",
+            ),
+        )
+        val tokens = field(
+            "API_KEY=…",
+            preferences.getString(FrSettings.KEY_TOKENS, "").orEmpty(),
+            minLines = 3,
+        )
+        container.addView(tokens)
+        caption(L10n.t("User-Agent des requêtes des sources", "User-Agent of the source requests"))
+        val ua = field("Mozilla/…", FrSettings.nuvioUserAgent)
+        container.addView(ua)
+        caption(L10n.t("Referer HTTP utilisé par les sources", "HTTP Referer used by the sources"))
+        val referer = field("https://…", FrSettings.nuvioReferer)
+        container.addView(referer)
+        caption(L10n.t("Cookies optionnels pour les domaines protégés", "Optional cookies for protected domains"))
+        val cookies = field("nom=valeur; …", FrSettings.nuvioCookies, minLines = 2)
+        container.addView(cookies)
+        AlertDialog.Builder(dialogContext)
+            .setTitle(L10n.t("Paramètres avancés", "Advanced settings"))
+            .setView(
+                ScrollView(dialogContext).apply {
+                    addView(container)
+                },
+            )
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
+                preferences.edit()
+                    .putString(FrSettings.KEY_TMDB, tmdb.text.toString().trim())
+                    .putString(FrSettings.KEY_TOKENS, tokens.text.toString().trim())
+                    .putString(FrSettings.KEY_UA, ua.text.toString().trim())
+                    .putString(FrSettings.KEY_REFERER, referer.text.toString().trim())
+                    .putString(FrSettings.KEY_COOKIES, cookies.text.toString().trim())
+                    .apply()
+                displayToast(L10n.t("Paramètres avancés enregistrés", "Advanced settings saved"))
             }
             .show()
     }
 
     private fun showNuvioPicker(dialogContext: Context) {
-        displayToast("Chargement des sources Nuvio…")
+        displayToast(L10n.t("Chargement des sources Nuvio…", "Loading Nuvio sources…"))
         settingsScope.launch {
             val nuvioResult = runCatching { NuvioClient.scrapers(includeDisabled = true) }
             val diagnostics = NuvioClient.diagnostics()
-            val choices = nuvioResult.getOrDefault(emptyList()).map { scraper ->
-                val origin = scraper.repoBase.substringAfter("githubusercontent.com/")
-                    .split('/').take(2).joinToString("/").takeIf(String::isNotBlank)
-                    ?: scraper.repoBase.substringAfter("://").substringBefore('/')
-                val recommendation = if (scraper.id in FrSettings.RECOMMENDED_NUVIO_IDS) " ★ conseillée" else ""
+            val all = nuvioResult.getOrDefault(emptyList())
+            val choices = all.map { scraper ->
+                // Le dépôt d'origine est toujours visible, comme dans l'application NuviO :
+                // un site français dans un dépôt international reste identifiable.
+                val origin = NuvioClient.repoLabel(scraper.repoBase)
+                val recommendation = if (scraper.id in FrSettings.RECOMMENDED_NUVIO_IDS) {
+                    L10n.t(" ★ conseillée", " ★ recommended")
+                } else {
+                    ""
+                }
                 val status = diagnostics[scraper.id]?.let { " · ${it.take(45)}" }.orEmpty()
                 val flag = FrSettings.flagForLanguages(scraper.contentLanguage)
                 SourceChoice(
@@ -1744,11 +2199,19 @@ class FrUnified : Source() {
                     enabled = FrSettings.isNuvioEnabled(scraper.id),
                 )
             }
+            val reposByScraper = all.associate { it.id.lowercase() to it.repoBase }
             handler.post {
                 if (choices.isEmpty()) {
                     displayToast(
-                        nuvioResult.exceptionOrNull()?.message?.let { "Nuvio indisponible : ${it.take(100)}" }
-                            ?: "Aucun scrapeur Nuvio configuré",
+                        nuvioResult.exceptionOrNull()?.message?.let {
+                            L10n.t(
+                                "Nuvio indisponible : ${it.take(100)}",
+                                "Nuvio unavailable: ${it.take(100)}",
+                            )
+                        } ?: L10n.t(
+                            "Aucun scrapeur Nuvio configuré (ajoutez un dépôt)",
+                            "No Nuvio scraper configured (add a repository)",
+                        ),
                         Toast.LENGTH_LONG,
                     )
                     return@post
@@ -1756,14 +2219,25 @@ class FrUnified : Source() {
                 val checked = BooleanArray(choices.size) { choices[it].enabled }
                 var wildcardMode = FrSettings.nuvioEnabled.any { it.equals("all", true) }
                 val dialog = AlertDialog.Builder(dialogContext)
-                    .setTitle("Nuvio (${checked.count { it }}/${choices.size} actives)")
+                    .setTitle(
+                        L10n.t(
+                            "Nuvio (${checked.count { it }}/${choices.size} actives)",
+                            "Nuvio (${checked.count { it }}/${choices.size} active)",
+                        ),
+                    )
+                    .setMessage(
+                        L10n.t(
+                            "Appuyez longuement pour supprimer le dépôt entier.",
+                            "Long-press to remove the whole repository.",
+                        ),
+                    )
                     .setMultiChoiceItems(
                         choices.map(SourceChoice::label).toTypedArray(),
                         checked,
                     ) { _, index, value -> checked[index] = value }
-                    .setNegativeButton("Annuler", null)
-                    .setNeutralButton("Conseillées", null)
-                    .setPositiveButton("Enregistrer") { _, _ ->
+                    .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+                    .setNeutralButton(L10n.t("Conseillées", "Recommended"), null)
+                    .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
                         val visible = choices.map { it.value.lowercase() }.toSet()
                         val enabled = if (wildcardMode) {
                             val oldHiddenExclusions = FrSettings.nuvioEnabled
@@ -1794,7 +2268,12 @@ class FrUnified : Source() {
                                     .joinToString("\n"),
                             )
                             .apply()
-                        displayToast("Nuvio : ${checked.count { it }} source(s) active(s)")
+                        displayToast(
+                            L10n.t(
+                                "Nuvio : ${checked.count { it }} source(s) active(s)",
+                                "Nuvio: ${checked.count { it }} active source(s)",
+                            ),
+                        )
                     }
                     .create()
                 dialog.setOnShowListener {
@@ -1807,59 +2286,82 @@ class FrUnified : Source() {
                             dialog.listView.setItemChecked(index, checked[index])
                         }
                     }
+                    // Suppression d'un dépôt : toutes les sources qui en viennent disparaissent.
+                    dialog.listView.setOnItemLongClickListener { _, _, position, _ ->
+                        val repo = reposByScraper[choices[position].value.lowercase()]
+                        if (repo.isNullOrBlank()) return@setOnItemLongClickListener false
+                        val removedCount = choices.count { choice ->
+                            reposByScraper[choice.value.lowercase()] == repo
+                        }
+                        AlertDialog.Builder(dialogContext)
+                            .setTitle(L10n.t("Supprimer le dépôt", "Remove the repository"))
+                            .setMessage(
+                                L10n.t(
+                                    "Supprimer « ${NuvioClient.repoLabel(repo)} » ($removedCount source(s)) ? " +
+                                        "Ajoutez-le à nouveau avec « Ajouter un dépôt Nuvio » pour le restaurer.",
+                                    "Remove « ${NuvioClient.repoLabel(repo)} » ($removedCount source(s))? " +
+                                        "Add it back with « Add a Nuvio repository » to restore it.",
+                                ),
+                            )
+                            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+                            .setPositiveButton(L10n.t("Supprimer", "Remove")) { _, _ ->
+                                val remaining = FrSettings.nuvioRepos.filter { it != repo }
+                                preferences.edit()
+                                    .putString(FrSettings.KEY_NUVIO_REPOS, remaining.joinToString("\n"))
+                                    .apply()
+                                NuvioClient.invalidateRepository(repo)
+                                displayToast(
+                                    L10n.t("Dépôt supprimé", "Repository removed"),
+                                    Toast.LENGTH_LONG,
+                                )
+                            }
+                            .show()
+                        true
+                    }
                 }
                 runCatching { dialog.show() }
-                    .onFailure { displayToast("Impossible d'ouvrir le sélecteur Nuvio", Toast.LENGTH_LONG) }
+                    .onFailure {
+                        displayToast(
+                            L10n.t(
+                                "Impossible d'ouvrir le sélecteur Nuvio",
+                                "Cannot open the Nuvio picker",
+                            ),
+                            Toast.LENGTH_LONG,
+                        )
+                    }
             }
         }
     }
 
-    private fun showNuvioLanguagePicker(dialogContext: Context) {
-        val languageLabels = linkedMapOf(
-            "fr" to "Français",
-            "en" to "English",
-            "es" to "Español",
-            "de" to "Deutsch",
-            "it" to "Italiano",
-            "pt" to "Português",
-            "ja" to "日本語",
-            "hi" to "हिन्दी",
-            "tr" to "Türkçe",
-            "id" to "Bahasa Indonesia",
-            "pl" to "Polski",
-            "ar" to "العربية",
-            "ta" to "தமிழ்",
-            "te" to "తెలుగు",
-            "ml" to "മലയാളം",
-            "kn" to "ಕನ್ನಡ",
-        )
-        val values = (languageLabels.keys + "all").toTypedArray()
-        val labels = values.map { value ->
-            if (value == "all") "🌍 Toutes les langues" else FrSettings.flagLabel(value, languageLabels[value] ?: value)
-        }.toTypedArray()
-        val checked = BooleanArray(values.size) { values[it] in FrSettings.nuvioLanguages }
-        AlertDialog.Builder(dialogContext)
-            .setTitle("Langues des sources Nuvio")
-            .setMultiChoiceItems(labels, checked) { _, index, value -> checked[index] = value }
-            .setNegativeButton("Annuler", null)
-            .setPositiveButton("Enregistrer") { _, _ ->
-                val selected = values.indices.filter { checked[it] }.map { values[it] }
-                    .ifEmpty { listOf("fr") }
-                preferences.edit()
-                    .putString(FrSettings.KEY_NUVIO_LANGUAGES, selected.joinToString("\n"))
-                    .apply()
-                displayToast("Nuvio : langues ${selected.joinToString()}")
-            }
-            .show()
-    }
-
     private fun showNuvioOrderDialog(dialogContext: Context) {
-        displayToast("Chargement des sources actives…")
+        displayToast(L10n.t("Chargement des sources…", "Loading sources…"))
         settingsScope.launch {
-            val scrapers = runCatching { NuvioClient.scrapers() }.getOrDefault(emptyList())
+            // includeDisabled = true : le classement ne doit jamais s'ouvrir sur
+            // une liste vide tant qu'un dépôt est lisible (les sources désactivées
+            // restent visibles et classables, signalées « désactivée »).
+            val result = runCatching { NuvioClient.scrapers(includeDisabled = true) }
+            val scrapers = result.getOrDefault(emptyList())
+            val failure = result.exceptionOrNull()
             handler.post {
                 if (scrapers.isEmpty()) {
-                    displayToast("Aucune source active : activez d'abord des sources Nuvio", Toast.LENGTH_LONG)
+                    AlertDialog.Builder(dialogContext)
+                        .setTitle(L10n.t("Classer les sources", "Rank the sources"))
+                        .setMessage(
+                            L10n.t(
+                                "Aucune source n'est connue pour l'instant : les dépôts ne sont pas (ou plus) " +
+                                    "lisibles. Mettez-les à jour, ou ajoutez un dépôt, puis réessayez.\n\n" +
+                                    (failure?.message?.take(160) ?: ""),
+                                "No source is known yet: the repositories are not (anymore) readable. " +
+                                    "Update them, or add a repository, then try again.\n\n" +
+                                    (failure?.message?.take(160) ?: ""),
+                            ),
+                        )
+                        .setNegativeButton(L10n.t("Fermer", "Close"), null)
+                        .setPositiveButton(L10n.t("Mettre à jour maintenant", "Update now")) { d, _ ->
+                            d.dismiss()
+                            runNuvioUpdate(dialogContext)
+                        }
+                        .show()
                     return@post
                 }
                 val byId = scrapers.associateBy { it.id.lowercase() }
@@ -1870,7 +2372,13 @@ class FrUnified : Source() {
                 }
                 byId.keys.forEach { key -> if (key !in ordered) ordered += key }
                 if (ordered.isEmpty()) {
-                    displayToast("Aucune source active : activez d'abord des sources Nuvio", Toast.LENGTH_LONG)
+                    displayToast(
+                        L10n.t(
+                            "Aucune source connue : mettez à jour les dépôts",
+                            "No known source: update the repositories",
+                        ),
+                        Toast.LENGTH_LONG,
+                    )
                     return@post
                 }
                 showNuvioOrderDialogBody(dialogContext, ordered.toMutableList(), byId)
@@ -1891,7 +2399,12 @@ class FrUnified : Source() {
         }
         container.addView(
             TextView(dialogContext).apply {
-                text = "N° 1 = source essayée en priorité. L'ordre est enregistré à chaque déplacement."
+                text = L10n.t(
+                    "N° 1 = source essayée en priorité. L'ordre est enregistré à chaque déplacement. " +
+                        "Le dépôt de chaque source est affiché sous le nom.",
+                    "No. 1 = source tried first. The order is saved on every move. " +
+                        "Each source's repository is shown under its name.",
+                )
                 textSize = 13f
                 setPadding(0, 0, 0, (density * 10).toInt())
             },
@@ -1933,12 +2446,26 @@ class FrUnified : Source() {
                 val scraper = byId.getValue(key)
                 val isRec = scraper.id in FrSettings.RECOMMENDED_NUVIO_IDS
                 val recLabel = if (isRec) " ★" else ""
+                val disabledLabel = if (!FrSettings.isNuvioEnabled(scraper.id)) {
+                    L10n.t(" · désactivée", " · disabled")
+                } else {
+                    ""
+                }
                 val labelText =
-                    "${index + 1}. ${FrSettings.flagForLanguages(scraper.contentLanguage)} ${scraper.name}$recLabel"
-                val textView = TextView(dialogContext).apply {
+                    "${index + 1}. ${FrSettings.flagForLanguages(scraper.contentLanguage)} ${scraper.name}$recLabel" +
+                    disabledLabel
+                val nameView = TextView(dialogContext).apply {
                     text = labelText
                     textSize = 14f
                     maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                val repoView = TextView(dialogContext).apply {
+                    text = "    " + NuvioClient.repoLabel(scraper.repoBase)
+                    textSize = 12f
+                    alpha = 0.7f
+                    maxLines = 1
                     ellipsize = TextUtils.TruncateAt.END
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 }
@@ -1948,17 +2475,29 @@ class FrUnified : Source() {
                     persistOrder()
                     render()
                 }
+                val textColumn = LinearLayout(dialogContext).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    addView(nameView)
+                    addView(repoView)
+                }
                 val row = LinearLayout(dialogContext).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
                     val rowVPad = (density * 4).toInt()
                     setPadding(0, rowVPad, 0, rowVPad)
-                    addView(textView)
-                    addView(arrowButton("⏫", "Déplacer tout en haut", index > 0) { moveTo(0) })
-                    addView(arrowButton("▲", "Monter d'une place", index > 0) { moveTo(index - 1) })
-                    addView(arrowButton("▼", "Descendre d'une place", index < ordered.size - 1) { moveTo(index + 1) })
+                    addView(textColumn)
+                    addView(arrowButton("⏫", L10n.t("Tout en haut", "To the top"), index > 0) { moveTo(0) })
+                    addView(arrowButton("▲", L10n.t("Monter d'une place", "Move up one"), index > 0) {
+                        moveTo(index - 1)
+                    })
                     addView(
-                        arrowButton("⏬", "Déplacer tout en bas", index < ordered.size - 1) {
+                        arrowButton("▼", L10n.t("Descendre d'une place", "Move down one"), index < ordered.size - 1) {
+                            moveTo(index + 1)
+                        },
+                    )
+                    addView(
+                        arrowButton("⏬", L10n.t("Tout en bas", "To the bottom"), index < ordered.size - 1) {
                             moveTo(ordered.size - 1)
                         },
                     )
@@ -1969,13 +2508,13 @@ class FrUnified : Source() {
         render()
 
         AlertDialog.Builder(dialogContext)
-            .setTitle("Classer les sources Nuvio (${ordered.size})")
+            .setTitle(L10n.t("Classer les sources Nuvio (${ordered.size})", "Rank the Nuvio sources (${ordered.size})"))
             .setView(
                 ScrollView(dialogContext).apply {
                     addView(container)
                 },
             )
-            .setPositiveButton("Terminé", null)
+            .setPositiveButton(L10n.t("Terminé", "Done"), null)
             .show()
     }
 
@@ -1990,9 +2529,16 @@ class FrUnified : Source() {
         }
         container.addView(
             TextView(dialogContext).apply {
-                text = "N° 1 = critère le plus souhaité. Un flux est classé d'après le premier critère qu'il " +
-                    "satisfait, puis le suivant (VF 720p passe avant VOSTFR 1080p si VF est devant). " +
-                    "L'ordre est enregistré à chaque déplacement."
+                text = L10n.t(
+                    "N° 1 = critère le plus souhaité. Un flux est classé d'après le premier critère qu'il " +
+                        "satisfait, puis le suivant (VF 720p passe avant VOSTFR 1080p si VF est devant). " +
+                        "L'ordre est enregistré à chaque déplacement. Ajoutez vos propres langues " +
+                        "(EN, TR, …) et qualités avec les boutons en bas.",
+                    "No. 1 = most wanted criterion. A stream is ranked by the first criterion it satisfies, " +
+                        "then the next one (VF 720p comes before VOSTFR 1080p when VF is ahead). " +
+                        "The order is saved on every move. Add your own languages (EN, TR, …) and " +
+                        "qualities with the buttons at the bottom.",
+                )
                 textSize = 13f
                 setPadding(0, 0, 0, (density * 8).toInt())
             },
@@ -2027,13 +2573,19 @@ class FrUnified : Source() {
         fun render() {
             itemsContainer.removeAllViews()
             ordered.forEachIndexed { index, criterion ->
-                val isLanguage = criterion in StreamLabel.LANGUAGE_ORDER
-                val labelText = "${index + 1}. ${if (isLanguage) "🗣️" else "🎞️"} " +
-                    if (isLanguage) {
-                        StreamLabel.languageLabel(criterion)
-                    } else {
-                        StreamLabel.qualityValue(criterion)?.let(StreamLabel::qualityLabel) ?: criterion
-                    }
+                val isLanguage = criterion in StreamLabel.LANGUAGE_ORDER ||
+                    FrSettings.customLanguages.any { it.equals(criterion, true) }
+                val labelText = "${index + 1}. " + when {
+                    isLanguage && criterion in StreamLabel.LANGUAGE_ORDER ->
+                        "🗣️ ${StreamLabel.languageLabel(criterion)}"
+
+                    isLanguage ->
+                        "${FrSettings.LANGUAGE_FLAGS[criterion.lowercase()] ?: "🌐"} " +
+                            "${criterion.uppercase()} — ${L10n.t("langue", "language")}"
+
+                    else ->
+                        "🎞️ ${StreamLabel.qualityValue(criterion)?.let(StreamLabel::qualityLabel) ?: criterion}"
+                }
                 val textView = TextView(dialogContext).apply {
                     text = labelText
                     textSize = 14f
@@ -2053,11 +2605,17 @@ class FrUnified : Source() {
                     val rowVPad = (density * 4).toInt()
                     setPadding(0, rowVPad, 0, rowVPad)
                     addView(textView)
-                    addView(arrowButton("⏫", "Déplacer tout en haut", index > 0) { moveTo(0) })
-                    addView(arrowButton("▲", "Monter d'une place", index > 0) { moveTo(index - 1) })
-                    addView(arrowButton("▼", "Descendre d'une place", index < ordered.size - 1) { moveTo(index + 1) })
+                    addView(arrowButton("⏫", L10n.t("Tout en haut", "To the top"), index > 0) { moveTo(0) })
+                    addView(arrowButton("▲", L10n.t("Monter d'une place", "Move up one"), index > 0) {
+                        moveTo(index - 1)
+                    })
                     addView(
-                        arrowButton("⏬", "Déplacer tout en bas", index < ordered.size - 1) {
+                        arrowButton("▼", L10n.t("Descendre d'une place", "Move down one"), index < ordered.size - 1) {
+                            moveTo(index + 1)
+                        },
+                    )
+                    addView(
+                        arrowButton("⏬", L10n.t("Tout en bas", "To the bottom"), index < ordered.size - 1) {
                             moveTo(ordered.size - 1)
                         },
                     )
@@ -2067,28 +2625,47 @@ class FrUnified : Source() {
         }
 
         val addQuality = Button(dialogContext).apply {
-            text = "+ Ajouter une qualité"
-            contentDescription = "Ajouter une résolution personnalisée"
+            text = L10n.t("+ Ajouter une qualité", "+ Add a quality")
+            contentDescription = L10n.t(
+                "Ajouter une résolution personnalisée",
+                "Add a custom resolution",
+            )
             setOnClickListener {
                 val input = EditText(dialogContext).apply {
-                    hint = "540p, 2160p, 8K…"
+                    hint = "540p / 540 / 2160p / 8K"
                     inputType = InputType.TYPE_CLASS_TEXT
                 }
                 AlertDialog.Builder(dialogContext)
-                    .setTitle("Ajouter une qualité")
-                    .setMessage("Saisissez une résolution verticale entre 144p et 8640p.")
+                    .setTitle(L10n.t("Ajouter une qualité", "Add a quality"))
+                    .setMessage(
+                        L10n.t(
+                            "Saisissez une résolution entre 144p et 8640p (540p, 540, 2160p, 8K…).",
+                            "Enter a resolution between 144p and 8640p (540p, 540, 2160p, 8K…).",
+                        ),
+                    )
                     .setView(input)
-                    .setNegativeButton("Annuler", null)
-                    .setPositiveButton("Ajouter") { _, _ ->
-                        val quality = StreamLabel.qualityValue(input.text.toString())
+                    .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+                    .setPositiveButton(L10n.t("Ajouter", "Add")) { _, _ ->
+                        val rawQuality = input.text.toString().trim().uppercase()
+                        val quality = StreamLabel.qualityValue(rawQuality)
+                            ?: Regex("(\\d{3,4})").find(rawQuality)?.groupValues?.get(1)?.toIntOrNull()
+                                ?.takeIf { it in 144..8640 }
                         if (quality == null || quality !in 144..8640) {
-                            displayToast("Résolution non reconnue")
+                            displayToast(
+                                L10n.t(
+                                    "Résolution non reconnue (ex. 540p, 1080p, 4K)",
+                                    "Unrecognized resolution (e.g. 540p, 1080p, 4K)",
+                                ),
+                            )
                         } else {
                             val token = StreamLabel.qualityText(quality)
                             if (token !in ordered) ordered.add(token)
                             val customs = (FrSettings.customQualities + quality).distinct().sortedDescending()
                             preferences.edit()
-                                .putString(FrSettings.KEY_CUSTOM_QUALITIES, customs.joinToString("\n") { "${it}p" })
+                                .putString(
+                                    FrSettings.KEY_CUSTOM_QUALITIES,
+                                    customs.joinToString("\n") { "${it}p" },
+                                )
                                 .putString(FrSettings.KEY_STREAM_ORDER, ordered.joinToString("\n"))
                                 .commit()
                             render()
@@ -2097,19 +2674,65 @@ class FrUnified : Source() {
                     .show()
             }
         }
+        val addLanguage = Button(dialogContext).apply {
+            text = L10n.t("+ Ajouter une langue", "+ Add a language")
+            contentDescription = L10n.t(
+                "Ajouter une langue classable (EN, TR, ES…)",
+                "Add a rankable language (EN, TR, ES…)",
+            )
+            setOnClickListener {
+                val options = FrSettings.ADDABLE_STREAM_LANGUAGES
+                    .filterNot { code ->
+                        ordered.any { it.equals(code.uppercase(), true) }
+                    }
+                    .map { code ->
+                        "${FrSettings.flagLabel(code, code.uppercase())} — $code"
+                    }
+                    .toTypedArray()
+                if (options.isEmpty()) {
+                    displayToast(
+                        L10n.t(
+                            "Toutes les langues proposées sont déjà classées",
+                            "All suggested languages are already ranked",
+                        ),
+                    )
+                    return@setOnClickListener
+                }
+                AlertDialog.Builder(dialogContext)
+                    .setTitle(L10n.t("Ajouter une langue au classement", "Add a language to the ranking"))
+                    .setItems(options) { dialog, which ->
+                        val code = FrSettings.ADDABLE_STREAM_LANGUAGES
+                            .filterNot { existing ->
+                                ordered.any { it.equals(existing.uppercase(), true) }
+                            }[which]
+                        val token = code.uppercase()
+                        if (token !in ordered) ordered.add(token)
+                        val customs = (FrSettings.customLanguages + token).distinct()
+                        preferences.edit()
+                            .putString(FrSettings.KEY_STREAM_LANGUAGES, customs.joinToString("\n"))
+                            .putString(FrSettings.KEY_STREAM_ORDER, ordered.joinToString("\n"))
+                            .commit()
+                        render()
+                        dialog.dismiss()
+                    }
+                    .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+                    .show()
+            }
+        }
         container.addView(addQuality)
+        container.addView(addLanguage)
         container.addView(itemsContainer)
         render()
 
         val dialog = AlertDialog.Builder(dialogContext)
-            .setTitle("Classer langues et qualités (${ordered.size})")
+            .setTitle(L10n.t("Classer les flux (langues et qualités)", "Rank streams (languages and qualities)"))
             .setView(
                 ScrollView(dialogContext).apply {
                     addView(container)
                 },
             )
-            .setNeutralButton("Ordre conseillé", null)
-            .setPositiveButton("Terminé") { _, _ -> persistOrder() }
+            .setNeutralButton(L10n.t("Ordre conseillé", "Recommended order"), null)
+            .setPositiveButton(L10n.t("Terminé", "Done")) { _, _ -> persistOrder() }
             .create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
@@ -2117,61 +2740,421 @@ class FrUnified : Source() {
                 ordered.addAll((FrSettings.DEFAULT_STREAM_ORDER + FrSettings.STREAM_CRITERIA).distinct())
                 persistOrder()
                 render()
-                displayToast("Ordre conseillé rétabli : VF, VFF, VFQ, MULTI, VOSTFR, VO, 1080p, 4K…")
+                displayToast(
+                    L10n.t(
+                        "Ordre conseillé rétabli : VF, VFF, VFQ, MULTI, VOSTFR, VO, 1080p, 4K…",
+                        "Recommended order restored: VF, VFF, VFQ, MULTI, VOSTFR, VO, 1080p, 4K…",
+                    ),
+                )
             }
         }
         runCatching { dialog.show() }
     }
 
+    /**
+     * Création d'une sauvegarde sans lien obligatoire : copie presse-papiers,
+     * partage vers l'application ou le dossier de son choix, ou enregistrement
+     * direct dans le dossier Téléchargements.
+     */
     private fun exportBackup(dialogContext: Context) {
         val json = SettingsBackup.export(preferences)
-        val clipboard = dialogContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        clipboard?.setPrimaryClip(ClipData.newPlainText("FR Unifié — sauvegarde", json))
+        val items = arrayOf(
+            L10n.t("Copier dans le presse-papiers", "Copy to the clipboard"),
+            L10n.t("Partager (choisir une app ou un dossier)", "Share (choose an app or a folder)"),
+            L10n.t("Enregistrer dans le dossier Téléchargements", "Save to the Downloads folder"),
+        )
         AlertDialog.Builder(dialogContext)
-            .setTitle("Sauvegarde copiée")
+            .setTitle(L10n.t("Créer une sauvegarde", "Create a backup"))
             .setMessage(
-                "${preferences.all.size} réglages copiés dans le presse-papiers. " +
-                    "Conservez ce JSON dans un endroit sûr.",
+                L10n.t(
+                    "${preferences.all.size} réglages prêts à l'export.",
+                    "${preferences.all.size} settings ready to export.",
+                ),
             )
-            .setPositiveButton("Fermer", null)
-            .show()
-    }
-
-    private fun showBackupRestoreDialog(dialogContext: Context) {
-        val input = EditText(dialogContext).apply {
-            hint = "Collez ici le JSON de sauvegarde"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            minLines = 8
-        }
-        AlertDialog.Builder(dialogContext)
-            .setTitle("Restaurer une sauvegarde")
-            .setMessage("Les réglages présents dans le JSON seront remplacés. Redémarrez ensuite l'extension.")
-            .setView(input)
-            .setNegativeButton("Annuler", null)
-            .setPositiveButton("Restaurer") { _, _ ->
-                val result = runCatching { SettingsBackup.restore(preferences, input.text.toString()) }
-                displayToast(
-                    result.fold({ "$it réglage(s) restauré(s)" }, { "Échec : ${it.message?.take(100)}" }),
-                    Toast.LENGTH_LONG,
-                )
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> copyBackupToClipboard(dialogContext, json)
+                    1 -> shareBackup(dialogContext, json)
+                    2 -> settingsScope.launch { saveBackupToFile(dialogContext, json) }
+                }
             }
             .show()
     }
 
+    private fun copyBackupToClipboard(dialogContext: Context, json: String) {
+        val clipboard = dialogContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.setPrimaryClip(ClipData.newPlainText("FR Unifié — sauvegarde", json))
+        AlertDialog.Builder(dialogContext)
+            .setTitle(L10n.t("Sauvegarde copiée", "Backup copied"))
+            .setMessage(
+                L10n.t(
+                    "${preferences.all.size} réglages copiés dans le presse-papiers. " +
+                        "Conservez ce JSON dans un endroit sûr.",
+                    "${preferences.all.size} settings copied to the clipboard. " +
+                        "Keep this JSON in a safe place.",
+                ),
+            )
+            .setPositiveButton(L10n.t("Fermer", "Close"), null)
+            .show()
+    }
+
+    private fun shareBackup(dialogContext: Context, json: String) {
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, json)
+            putExtra(Intent.EXTRA_SUBJECT, "FR Unifié — sauvegarde")
+        }
+        runCatching {
+            dialogContext.startActivity(
+                Intent.createChooser(send, L10n.t("Partager la sauvegarde", "Share the backup")),
+            )
+        }.onFailure {
+            displayToast(
+                L10n.t(
+                    "Aucune application de partage trouvée",
+                    "No sharing application found",
+                ),
+                Toast.LENGTH_LONG,
+            )
+        }
+    }
+
+    private fun saveBackupToFile(dialogContext: Context, json: String) {
+        val name = "fr-unified-backup-" +
+            SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date()) + ".json"
+        val result = runCatching {
+            val resolver = dialogContext.contentResolver
+            if (Build.VERSION.SDK_INT >= 29) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, name)
+                    put(MediaStore.Downloads.MIME_TYPE, "application/json")
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                }
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: error("insert")
+                resolver.openOutputStream(uri)?.use { it.write(json.toByteArray(Charsets.UTF_8)) }
+                    ?: error("write")
+            } else {
+                @Suppress("DEPRECATION")
+                val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                    ?: error("no downloads directory")
+                dir.mkdirs()
+                File(dir, name).writeText(json, Charsets.UTF_8)
+            }
+        }
+        handler.post {
+            displayToast(
+                result.fold(
+                    {
+                        L10n.t(
+                            "Sauvegarde enregistrée : $it",
+                            "Backup saved: $it",
+                        )
+                    },
+                    {
+                        L10n.t(
+                            "Échec de l'enregistrement : ${it.message?.take(80) ?: ""}",
+                            "Save failed: ${it.message?.take(80) ?: ""}",
+                        )
+                    },
+                ),
+                Toast.LENGTH_LONG,
+            )
+        }
+    }
+
+    /**
+     * Restauration sans lien obligatoire : choisir un fichier de sauvegarde
+     * (dossier Téléchargements), coller le JSON, ou synchroniser depuis un lien.
+     */
+    private fun showBackupImportDialog(dialogContext: Context) {
+        val files = listBackupFiles(dialogContext)
+        val items = buildList {
+            add(
+                if (files.isEmpty()) {
+                    L10n.t(
+                        "Choisir un fichier de sauvegarde… (aucun trouvé)",
+                        "Choose a backup file… (none found)",
+                    )
+                } else {
+                    L10n.t(
+                        "Choisir un fichier de sauvegarde… (${files.size} trouvé(s))",
+                        "Choose a backup file… (${files.size} found)",
+                    )
+                }
+            )
+            add(L10n.t("Coller le JSON", "Paste the JSON"))
+            add(L10n.t("Lien HTTPS (synchronisation)", "HTTPS link (sync)"))
+        }
+        AlertDialog.Builder(dialogContext)
+            .setTitle(L10n.t("Restaurer une sauvegarde", "Restore a backup"))
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> if (files.isEmpty()) {
+                        displayToast(
+                            L10n.t(
+                                "Aucun fichier de sauvegarde trouvé dans Téléchargements",
+                                "No backup file found in Downloads",
+                            ),
+                            Toast.LENGTH_LONG,
+                        )
+                    } else {
+                        pickBackupFile(dialogContext, files)
+                    }
+
+                    1 -> showBackupPasteDialog(dialogContext)
+
+                    2 -> showBackupSyncPopup(dialogContext)
+                }
+            }
+            .show()
+    }
+
+    private data class BackupFileEntry(val name: String, val uri: Uri)
+
+    /** Fichiers JSON de sauvegarde FR Unifié du dossier Téléchargements (best effort). */
+    private fun listBackupFiles(dialogContext: Context): List<BackupFileEntry> = runCatching {
+        val resolver = dialogContext.contentResolver
+        if (Build.VERSION.SDK_INT >= 29) {
+            val projection = arrayOf(MediaStore.Downloads.DISPLAY_NAME, MediaStore.Downloads._ID)
+            val cursor = resolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                projection,
+                MediaStore.Downloads.DISPLAY_NAME + " LIKE ?",
+                arrayOf("%.json"),
+                MediaStore.Downloads.DATE_ADDED + " DESC",
+            )
+            val entries = buildList {
+                cursor?.use { c ->
+                    val nameIndex = c.getColumnIndexOrThrow(MediaStore.Downloads.DISPLAY_NAME)
+                    val idIndex = c.getColumnIndexOrThrow(MediaStore.Downloads._ID)
+                    while (c.moveToNext()) {
+                        val id = c.getLong(idIndex)
+                        val fileName = c.getString(nameIndex) ?: continue
+                        if (!fileName.lowercase().contains("fr-unified", true)) continue
+                        add(
+                            BackupFileEntry(
+                                fileName,
+                                ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id),
+                            ),
+                        )
+                    }
+                }
+            }
+            entries
+        } else {
+            @Suppress("DEPRECATION")
+            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (dir?.exists() != true) {
+                emptyList()
+            } else {
+                dir.listFiles { file ->
+                    file.isFile &&
+                        file.name.endsWith(".json", true) &&
+                        file.name.contains("fr-unified", true)
+                }
+                    .orEmpty()
+                    .sortedByDescending { it.lastModified() }
+                    .map { BackupFileEntry(it.name, Uri.fromFile(it)) }
+            }
+        }
+    }.getOrDefault(emptyList())
+
+    private fun pickBackupFile(dialogContext: Context, files: List<BackupFileEntry>) {
+        AlertDialog.Builder(dialogContext)
+            .setTitle(L10n.t("Choisir un fichier de sauvegarde", "Choose a backup file"))
+            .setItems(files.map(BackupFileEntry::name).toTypedArray()) { _, which ->
+                val entry = files[which]
+                val result = runCatching {
+                    dialogContext.contentResolver.openInputStream(entry.uri)
+                        ?.use { it.readBytes().toString(Charsets.UTF_8) }
+                        ?: error("read")
+                }
+                result.fold(
+                    { raw -> applyBackup(dialogContext, raw) },
+                    {
+                        displayToast(
+                            L10n.t(
+                                "Impossible de lire le fichier : ${it.message?.take(80) ?: ""}",
+                                "Cannot read the file: ${it.message?.take(80) ?: ""}",
+                            ),
+                            Toast.LENGTH_LONG,
+                        )
+                    },
+                )
+            }
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .show()
+    }
+
+    private fun showBackupPasteDialog(dialogContext: Context) {
+        val input = EditText(dialogContext).apply {
+            hint = L10n.t("Collez ici le JSON de sauvegarde", "Paste the backup JSON here")
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 8
+        }
+        AlertDialog.Builder(dialogContext)
+            .setTitle(L10n.t("Coller le JSON de sauvegarde", "Paste the backup JSON"))
+            .setMessage(
+                L10n.t(
+                    "Les réglages présents dans le JSON seront remplacés. " +
+                        "Redémarrez ensuite l'application.",
+                    "The settings present in the JSON will be replaced. " +
+                        "Restart the application afterwards.",
+                ),
+            )
+            .setView(input)
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .setPositiveButton(L10n.t("Restaurer", "Restore")) { _, _ ->
+                applyBackup(dialogContext, input.text.toString())
+            }
+            .show()
+    }
+
+    private fun applyBackup(dialogContext: Context, raw: String) {
+        val result = runCatching { SettingsBackup.restore(preferences, raw) }
+        displayToast(
+            result.fold(
+                {
+                    L10n.t(
+                        "$it réglage(s) restauré(s)",
+                        "$it setting(s) restored",
+                    )
+                },
+                {
+                    L10n.t(
+                        "Échec : ${it.message?.take(100)}",
+                        "Failed: ${it.message?.take(100)}",
+                    )
+                },
+            ),
+            Toast.LENGTH_LONG,
+        )
+    }
+
+    /**
+     * Synchronisation par lien (facultatif, comme avant) : lien HTTPS vers un JSON
+     * de sauvegarde + restauration automatique quotidienne.
+     */
+    private fun showBackupSyncPopup(dialogContext: Context) {
+        val density = dialogContext.resources.displayMetrics.density
+        val padding = (density * 12).toInt()
+        val container = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
+        val input = EditText(dialogContext).apply {
+            hint = "https://…/backup.json"
+            setText(FrSettings.backupUrl)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setSingleLine(false)
+            minLines = 2
+        }
+        val autoRestore = CheckBox(dialogContext).apply {
+            text = L10n.t(
+                "Restaurer automatiquement chaque jour au lancement",
+                "Restore automatically every day at startup",
+            )
+            isChecked = FrSettings.backupAutoRestore
+        }
+        container.addView(input)
+        container.addView(autoRestore)
+        val dialog = AlertDialog.Builder(dialogContext)
+            .setTitle(L10n.t("Synchronisation par lien (facultatif)", "Sync by link (optional)"))
+            .setMessage(
+                L10n.t(
+                    "Lien direct vers un JSON de sauvegarde (GitHub Gist brut, serveur personnel…).",
+                    "Direct link to a backup JSON (raw GitHub Gist, personal server…).",
+                ),
+            )
+            .setView(container)
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .setNeutralButton(L10n.t("Restaurer maintenant", "Restore now"), null)
+            .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
+                saveBackupSync(input.text.toString(), autoRestore.isChecked)
+            }
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                val url = input.text.toString().trim()
+                if (url.isEmpty() || !url.startsWith("https://")) {
+                    displayToast(
+                        L10n.t(
+                            "Saisissez d'abord un lien https://",
+                            "Enter an https:// link first",
+                        ),
+                        Toast.LENGTH_LONG,
+                    )
+                    return@setOnClickListener
+                }
+                saveBackupSync(url, autoRestore.isChecked)
+                dialog.dismiss()
+                displayToast(
+                    L10n.t("Restauration depuis le lien…", "Restoring from the link…"),
+                    Toast.LENGTH_LONG,
+                )
+                settingsScope.launch {
+                    val result = runCatching { SettingsBackup.restore(preferences, FrRuntime.getText(url)) }
+                    handler.post {
+                        displayToast(
+                            result.fold(
+                                {
+                                    L10n.t(
+                                        "$it réglage(s) restauré(s)",
+                                        "$it setting(s) restored",
+                                    )
+                                },
+                                {
+                                    L10n.t(
+                                        "Échec : ${it.message?.take(100)}",
+                                        "Failed: ${it.message?.take(100)}",
+                                    )
+                                },
+                            ),
+                            Toast.LENGTH_LONG,
+                        )
+                    }
+                }
+            }
+        }
+        runCatching { dialog.show() }
+    }
+
+    private fun saveBackupSync(url: String, autoRestore: Boolean) {
+        val clean = url.trim()
+        if (clean.isNotEmpty() && !clean.startsWith("https://")) {
+            displayToast(
+                L10n.t("Le lien doit commencer par https://", "The link must start with https://"),
+                Toast.LENGTH_LONG,
+            )
+            return
+        }
+        preferences.edit()
+            .putString(FrSettings.KEY_BACKUP_URL, clean)
+            .putBoolean(FrSettings.KEY_BACKUP_AUTO_RESTORE, autoRestore)
+            .apply()
+        displayToast(L10n.t("Synchronisation enregistrée", "Sync saved"))
+    }
+
     private fun runStremioUpdate(dialogContext: Context) {
-        displayToast("Mise à jour Stremio en cours…", Toast.LENGTH_LONG)
+        displayToast(L10n.t("Mise à jour Stremio en cours…", "Updating Stremio…"), Toast.LENGTH_LONG)
         settingsScope.launch {
             val report = runCatching { StremioCatalog.updateAddons() }
             handler.post {
                 AlertDialog.Builder(dialogContext)
-                    .setTitle(if (report.isSuccess) "Addons Stremio à jour" else "Mise à jour impossible")
-                    .setMessage(
-                        report.map(StremioCatalog.UpdateReport::summary).getOrElse {
-                            it.message
-                                ?: "Erreur inconnue"
+                    .setTitle(
+                        if (report.isSuccess) {
+                            L10n.t("Addons Stremio à jour", "Stremio addons up to date")
+                        } else {
+                            L10n.t("Mise à jour impossible", "Update failed")
                         },
                     )
-                    .setPositiveButton("Fermer", null)
+                    .setMessage(
+                        report.map { it.summary() }.getOrElse {
+                            it.message ?: L10n.t("Erreur inconnue", "Unknown error")
+                        },
+                    )
+                    .setPositiveButton(L10n.t("Fermer", "Close"), null)
                     .show()
             }
         }
@@ -2179,25 +3162,40 @@ class FrUnified : Source() {
 
     /** Relecture immédiate des dépôts Nuvio et rafraîchissement de tous les scripts. */
     private fun runNuvioUpdate(dialogContext: Context) {
-        displayToast("Mise à jour des sources Nuvio en cours…", Toast.LENGTH_LONG)
+        displayToast(
+            L10n.t("Mise à jour des sources Nuvio en cours…", "Updating Nuvio sources…"),
+            Toast.LENGTH_LONG,
+        )
         settingsScope.launch {
             val report = runCatching { NuvioClient.updateSources() }
             handler.post {
                 AlertDialog.Builder(dialogContext)
-                    .setTitle(if (report.isSuccess) "Sources Nuvio à jour" else "Mise à jour impossible")
-                    .setMessage(
-                        report.map(NuvioClient.UpdateReport::summary).getOrElse { failure ->
-                            failure.message?.take(300) ?: "Erreur inconnue"
+                    .setTitle(
+                        if (report.isSuccess) {
+                            L10n.t("Sources Nuvio à jour", "Nuvio sources up to date")
+                        } else {
+                            L10n.t("Mise à jour impossible", "Update failed")
                         },
                     )
-                    .setPositiveButton("Fermer", null)
+                    .setMessage(
+                        report.map { it.summary() }.getOrElse { failure ->
+                            failure.message?.take(300) ?: L10n.t("Erreur inconnue", "Unknown error")
+                        },
+                    )
+                    .setPositiveButton(L10n.t("Fermer", "Close"), null)
                     .show()
             }
         }
     }
 
     private fun showNuvioDiagnostic(dialogContext: Context) {
-        displayToast("Diagnostic Nuvio réel en cours (jusqu’à cinq sources)…", Toast.LENGTH_LONG)
+        displayToast(
+            L10n.t(
+                "Diagnostic Nuvio réel en cours (jusqu’à cinq sources)…",
+                "Real Nuvio diagnostics running (up to five sources)…",
+            ),
+            Toast.LENGTH_LONG,
+        )
         settingsScope.launch {
             val report = runCatching {
                 val engine = NuvioClient.engineStatus()
@@ -2213,19 +3211,25 @@ class FrUnified : Source() {
                 val checks = tested.map { scraper ->
                     scraper to runCatching { NuvioClient.testProvider(scraper.id) }
                 }
+                val repoSummary = FrSettings.nuvioRepos.joinToString(", ") { NuvioClient.repoLabel(it) }
                 buildString {
                     appendLine(engine)
                     appendLine()
-                    appendLine("Dépôts : ${FrSettings.nuvioRepos.size}")
-                    appendLine("Scrapeurs détectés : ${all.size}")
-                    appendLine("Scrapeurs actifs : ${active.size}")
+                    appendLine(
+                        L10n.t(
+                            "Dépôts : ${FrSettings.nuvioRepos.size} (${repoSummary})",
+                            "Repositories: ${FrSettings.nuvioRepos.size} (${repoSummary})",
+                        ),
+                    )
+                    appendLine(L10n.t("Scrapeurs détectés : ${all.size}", "Scrapers detected: ${all.size}"))
+                    appendLine(L10n.t("Scrapeurs actifs : ${active.size}", "Active scrapers: ${active.size}"))
                     appendLine("Mode : ${FrSettings.nuvioSearchMode}")
                     if (checks.isEmpty()) {
                         appendLine()
-                        append("Aucune source active à tester.")
+                        append(L10n.t("Aucune source active à tester.", "No active source to test."))
                     } else {
                         appendLine()
-                        appendLine("Tests réseau Android/Rhino :")
+                        appendLine(L10n.t("Tests réseau Android/Rhino :", "Android/Rhino network tests:"))
                         checks.forEach { (scraper, outcome) ->
                             val result = outcome.getOrElse { failure ->
                                 "✗ ${failure.message?.take(160) ?: failure::class.simpleName.orEmpty()}"
@@ -2237,21 +3241,29 @@ class FrUnified : Source() {
             }
             handler.post {
                 AlertDialog.Builder(dialogContext)
-                    .setTitle(if (report.isSuccess) "Diagnostic Nuvio" else "Diagnostic Nuvio impossible")
-                    .setMessage(
-                        report.getOrElse { failure ->
-                            failure.message?.take(700) ?: "Erreur inconnue"
+                    .setTitle(
+                        if (report.isSuccess) {
+                            L10n.t("Diagnostic Nuvio", "Nuvio diagnostics")
+                        } else {
+                            L10n.t("Diagnostic Nuvio impossible", "Nuvio diagnostics failed")
                         },
                     )
-                    .setNegativeButton("Fermer", null)
-                    .setPositiveButton("Choisir les sources") { _, _ -> showNuvioPicker(dialogContext) }
+                    .setMessage(
+                        report.getOrElse { failure ->
+                            failure.message?.take(700) ?: L10n.t("Erreur inconnue", "Unknown error")
+                        },
+                    )
+                    .setNegativeButton(L10n.t("Fermer", "Close"), null)
+                    .setPositiveButton(L10n.t("Choisir les sources", "Choose the sources")) { _, _ ->
+                        showNuvioPicker(dialogContext)
+                    }
                     .show()
             }
         }
     }
 
     private fun showStremioCatalogPicker(dialogContext: Context) {
-        displayToast("Chargement des catalogues Stremio…")
+        displayToast(L10n.t("Chargement des catalogues Stremio…", "Loading Stremio catalogs…"))
         settingsScope.launch {
             val result = runCatching { StremioCatalog.catalogs() }
             val catalogs = result.getOrDefault(emptyList())
@@ -2259,15 +3271,22 @@ class FrUnified : Source() {
             handler.post {
                 if (catalogs.isEmpty()) {
                     displayToast(
-                        result.exceptionOrNull()?.message?.let { "Catalogues Stremio indisponibles : ${it.take(100)}" }
-                            ?: "Aucun addon actif n'expose de catalogue",
+                        result.exceptionOrNull()?.message?.let {
+                            L10n.t(
+                                "Catalogues Stremio indisponibles : ${it.take(100)}",
+                                "Stremio catalogs unavailable: ${it.take(100)}",
+                            )
+                        } ?: L10n.t(
+                            "Aucun addon actif n'expose de catalogue",
+                            "No active addon exposes a catalog",
+                        ),
                         Toast.LENGTH_LONG,
                     )
                     return@post
                 }
                 val selectedIndex = catalogs.indexOfFirst { it.key == selected?.key }.coerceAtLeast(0)
                 AlertDialog.Builder(dialogContext)
-                    .setTitle("Catalogue Stremio (${catalogs.size})")
+                    .setTitle(L10n.t("Catalogue Stremio (${catalogs.size})", "Stremio catalog (${catalogs.size})"))
                     .setSingleChoiceItems(
                         catalogs.map(StremioCatalog.Catalog::label).toTypedArray(),
                         selectedIndex,
@@ -2275,10 +3294,12 @@ class FrUnified : Source() {
                         preferences.edit()
                             .putString(FrSettings.KEY_STREMIO_CATALOG, catalogs[index].key)
                             .apply()
-                        displayToast("Catalogue : ${catalogs[index].label}")
+                        displayToast(
+                            L10n.t("Catalogue : ${catalogs[index].label}", "Catalog: ${catalogs[index].label}"),
+                        )
                         dialog.dismiss()
                     }
-                    .setNegativeButton("Annuler", null)
+                    .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
                     .show()
             }
         }
@@ -2291,33 +3312,52 @@ class FrUnified : Source() {
             val locale = Regex("/[a-z]{2}-[A-Z]{2}(?:/|$)").find("$clean/")?.value?.trim('/')
             val flag = locale?.let { FrSettings.flagForLanguages(listOf(it)) } ?: "🌐"
             val recommended = if (FrSettings.DEFAULT_STREMIO_ADDONS.any { StremioClient.base(it) == clean }) {
-                " ★ conseillée"
+                L10n.t(" ★ conseillée", " ★ recommended")
             } else {
                 ""
             }
             SourceChoice("$flag $display$recommended", clean, FrSettings.isStremioEnabled(clean))
         }
         if (choices.isEmpty()) {
-            displayToast("Aucun addon Stremio configuré", Toast.LENGTH_LONG)
+            displayToast(
+                L10n.t("Aucun addon Stremio configuré", "No Stremio addon configured"),
+                Toast.LENGTH_LONG,
+            )
             return
         }
         val checked = BooleanArray(choices.size) { choices[it].enabled }
         val dialog = AlertDialog.Builder(dialogContext)
-            .setTitle("Stremio (${checked.count { it }}/${choices.size} actifs)")
+            .setTitle(
+                L10n.t(
+                    "Stremio (${checked.count { it }}/${choices.size} actifs)",
+                    "Stremio (${checked.count { it }}/${choices.size} active)",
+                ),
+            )
+            .setMessage(
+                L10n.t(
+                    "Appuyez longuement pour supprimer un addon.",
+                    "Long-press to remove an addon.",
+                ),
+            )
             .setMultiChoiceItems(
                 choices.map(SourceChoice::label).toTypedArray(),
                 checked,
             ) { _, index, value -> checked[index] = value }
-            .setNegativeButton("Annuler", null)
-            .setNeutralButton("Tout activer", null)
-            .setPositiveButton("Enregistrer") { _, _ ->
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .setNeutralButton(L10n.t("Tout activer", "Enable all"), null)
+            .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
                 val visible = choices.map(SourceChoice::value).toSet()
                 val disabled = FrSettings.stremioDisabled.filterNot(visible::contains) +
                     choices.indices.filter { !checked[it] }.map { choices[it].value }
                 preferences.edit()
                     .putString(FrSettings.KEY_STREMIO_DISABLED, disabled.distinct().joinToString("\n"))
                     .apply()
-                displayToast("Stremio : ${checked.count { it }} addon(s) actif(s)")
+                displayToast(
+                    L10n.t(
+                        "Stremio : ${checked.count { it }} addon(s) actif(s)",
+                        "Stremio: ${checked.count { it }} active addon(s)",
+                    ),
+                )
             }
             .create()
         dialog.setOnShowListener {
@@ -2327,9 +3367,45 @@ class FrUnified : Source() {
                     dialog.listView.setItemChecked(index, true)
                 }
             }
+            // Suppression d'un addon : retiré de la liste ET désactivé (les addons
+            // par défaut ne doivent pas ressusciter via la fusion des valeurs).
+            dialog.listView.setOnItemLongClickListener { _, _, position, _ ->
+                val addon = choices[position].value
+                AlertDialog.Builder(dialogContext)
+                    .setTitle(L10n.t("Supprimer l'addon", "Remove the addon"))
+                    .setMessage(
+                        L10n.t(
+                            "Supprimer « ${addon.substringAfter("://").removeSuffix("/manifest.json")} » ?",
+                            "Remove « ${addon.substringAfter("://").removeSuffix("/manifest.json")} »?",
+                        ),
+                    )
+                    .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+                    .setPositiveButton(L10n.t("Supprimer", "Remove")) { _, _ ->
+                        val remaining = FrSettings.stremioUrls.filter { it != addon }
+                        val disabled = FrSettings.stremioDisabled + addon
+                        preferences.edit()
+                            .putString(FrSettings.KEY_STREMIO, remaining.joinToString("\n"))
+                            .putString(FrSettings.KEY_STREMIO_DISABLED, disabled.distinct().joinToString("\n"))
+                            .apply()
+                        displayToast(
+                            L10n.t("Addon supprimé", "Addon removed"),
+                            Toast.LENGTH_LONG,
+                        )
+                    }
+                    .show()
+                true
+            }
         }
         runCatching { dialog.show() }
-            .onFailure { displayToast("Impossible d'ouvrir le sélecteur Stremio", Toast.LENGTH_LONG) }
+            .onFailure {
+                displayToast(
+                    L10n.t(
+                        "Impossible d'ouvrir le sélecteur Stremio",
+                        "Cannot open the Stremio picker",
+                    ),
+                    Toast.LENGTH_LONG,
+                )
+            }
     }
 
     private fun showExternalSourceDialog(
@@ -2347,11 +3423,16 @@ class FrUnified : Source() {
             minLines = 2
         }
         AlertDialog.Builder(dialogContext)
-            .setTitle("Ajouter — $kindName")
-            .setMessage("Cette entrée accepte uniquement le format $kindName.")
+            .setTitle(L10n.t("Ajouter — $kindName", "Add — $kindName"))
+            .setMessage(
+                L10n.t(
+                    "Cette entrée accepte uniquement le format $kindName.",
+                    "This entry only accepts the $kindName format.",
+                ),
+            )
             .setView(input)
-            .setNegativeButton("Annuler", null)
-            .setPositiveButton("Analyser") { _, _ ->
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .setPositiveButton(L10n.t("Analyser", "Parse")) { _, _ ->
                 importExternalSource(dialogContext, input.text.toString(), expectedKind)
             }
             .show()
@@ -2363,16 +3444,22 @@ class FrUnified : Source() {
         expectedKind: ExternalSourceImporter.Kind,
     ) {
         if (input.isBlank()) {
-            displayToast("Saisissez une URL", Toast.LENGTH_LONG)
+            displayToast(L10n.t("Saisissez une URL", "Enter a URL"), Toast.LENGTH_LONG)
             return
         }
-        displayToast("Analyse ${externalKindName(expectedKind)}…")
+        displayToast(
+            L10n.t("Analyse ${externalKindName(expectedKind)}…", "Parsing ${externalKindName(expectedKind)}…"),
+        )
         settingsScope.launch {
             val outcome = runCatching {
                 val result = ExternalSourceImporter.inspect(input)
                 require(result.kind == expectedKind) {
-                    "Format ${externalKindName(result.kind)} détecté. " +
-                        "Ajoutez cette URL depuis la section ${externalKindName(result.kind)}."
+                    L10n.t(
+                        "Format ${externalKindName(result.kind)} détecté. " +
+                            "Ajoutez cette URL depuis la section ${externalKindName(result.kind)}.",
+                        "${externalKindName(result.kind)} format detected. " +
+                            "Add this URL from the ${externalKindName(result.kind)} section.",
+                    )
                 }
                 result
             }
@@ -2380,10 +3467,15 @@ class FrUnified : Source() {
             handler.post {
                 outcome.onSuccess { result ->
                     AlertDialog.Builder(dialogContext)
-                        .setTitle("${externalKindName(result.kind)} ajouté")
+                        .setTitle(
+                            L10n.t(
+                                "${externalKindName(result.kind)} ajouté",
+                                "${externalKindName(result.kind)} added",
+                            ),
+                        )
                         .setMessage(result.summary)
-                        .setNegativeButton("Fermer", null)
-                        .setPositiveButton("Ouvrir la section") { _, _ ->
+                        .setNegativeButton(L10n.t("Fermer", "Close"), null)
+                        .setPositiveButton(L10n.t("Ouvrir la section", "Open the section")) { _, _ ->
                             when (result.kind) {
                                 ExternalSourceImporter.Kind.NUVIO -> showNuvioPicker(dialogContext)
                                 ExternalSourceImporter.Kind.STREMIO -> showStremioPicker(dialogContext)
@@ -2392,9 +3484,9 @@ class FrUnified : Source() {
                         .show()
                 }.onFailure { failure ->
                     AlertDialog.Builder(dialogContext)
-                        .setTitle("Import impossible")
-                        .setMessage(failure.message?.take(500) ?: "Format non reconnu")
-                        .setPositiveButton("Fermer", null)
+                        .setTitle(L10n.t("Import impossible", "Import failed"))
+                        .setMessage(failure.message?.take(500) ?: L10n.t("Format non reconnu", "Unrecognized format"))
+                        .setPositiveButton(L10n.t("Fermer", "Close"), null)
                         .show()
                 }
             }
@@ -2451,32 +3543,6 @@ class FrUnified : Source() {
         )
     }
 
-    private fun PreferenceScreen.edit(
-        key: String,
-        default: String,
-        title: String,
-        summary: String,
-        multiline: Boolean = true,
-    ) {
-        addPreference(
-            EditTextPreference(context).apply {
-                this.key = key
-                this.title = title
-                this.summary = summary
-                dialogTitle = title
-                setDefaultValue(default)
-                setOnBindEditTextListener { input ->
-                    input.inputType = InputType.TYPE_CLASS_TEXT or if (multiline) {
-                        InputType.TYPE_TEXT_FLAG_MULTI_LINE
-                    } else {
-                        0
-                    }
-                    if (multiline) input.minLines = 4
-                }
-            },
-        )
-    }
-
     private fun PreferenceScreen.list(
         key: String,
         default: String,
@@ -2493,7 +3559,11 @@ class FrUnified : Source() {
         }
         fun summaryFor(value: String): String {
             val index = preference.findIndexOfValue(value)
-            return if (index >= 0 && index < entries.size) entries[index] else "Choisir une valeur"
+            return if (index >= 0 && index < entries.size) {
+                entries[index]
+            } else {
+                L10n.t("Choisir une valeur", "Choose a value")
+            }
         }
         preference.summary = summaryFor(preferences.getString(key, default) ?: default)
         preference.setOnPreferenceChangeListener { _, newValue ->

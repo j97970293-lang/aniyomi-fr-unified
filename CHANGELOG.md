@@ -1,5 +1,23 @@
 # Historique des versions
 
+## 16.13 — 8 septembre 2026
+
+- **interface bilingue français/anglais** : nouveau réglage « Langue de l'application » (section Général) qui traduit tous les libellés, popups, toasts, diagnostics et libellés d'épisodes ; FR Unifié n'est plus une extension « française » seulement — elle apparaît désormais dans tous les filtres de langue d'Aniyomi ;
+- **plus aucun site bloqué par la langue** : la configuration « langues Nuvio » n'empêche plus l'exécution d'un provider — un site anglais ou turc s'exécute comme un site français ; la langue du flux est simplement classée avec les autres critères, et de **nouvelles langues deviennent classables** depuis « Classer les flux » (bouton « + Ajouter une langue » : EN, TR, ES, DE, IT, PT…) ;
+- **dépôts visibles comme dans NuviO** : le sélecteur de sources affiche le dépôt d'origine de chaque site sous son nom (ex. « D3adlyRocket/Anime-Nuvio »), pour distinguer un site français d'un site international ;
+- **suppression des dépôts et des addons** : appui long sur un site du sélecteur Nuvio (supprime le dépôt entier, avec confirmation) ou sur un addon du sélecteur Stremio (supprime l'addon sans le laisser ressusciter via les valeurs par défaut) ;
+- **réglages simplifiés** : les réglages difficiles sont groupés dans des popups de type Cloudstream, au lieu de la longue liste d'origine :
+  - « Catalogues » : les quatre catalogues (TMDB, AniList, Jikan, Stremio) en cases à cocher dans une seule fenêtre (remplace les quatre interrupteurs et l'ancien « Catalogues principaux ») ;
+  - « Options de recherche des sources » : parallélisme, flux maximum par site, vérification anti-popups, mise à jour automatique + action « Mettre à jour les sources maintenant » ;
+  - « Options Stremio » : flux maximum par addon, mise à jour automatique + action « Mettre à jour maintenant » ;
+  - « Paramètres avancés » : clé API TMDB, clés API des sources, User-Agent, Referer, cookies ;
+  - « Réglages DNS avancés » : DNS personnalisé (DoH ou UDP 53) + test de résolution ;
+- **flux maximum par site illimité par défaut** (comme dans NuviO) ; l'ancienne valeur par défaut (4) est migrée automatiquement vers « illimité » ;
+- **classement des sources sans liste vide** : si les dépôts ne sont pas lisibles, le dialogue s'ouvre sur un message clair avec un bouton « Mettre à jour maintenant » au lieu d'une liste vide ; les sources désactivées restent classables, signalées « désactivée » ;
+- **sauvegarde sans lien obligatoire** : « Créer une sauvegarde » (presse-papiers, partage vers une application ou un dossier de votre choix, ou enregistrement dans Téléchargements) et « Restaurer une sauvegarde » (choisir un fichier du dossier Téléchargements, coller le JSON, ou lien HTTPS) ; la synchronisation quotidienne par lien HTTPS reste disponible et facultative ;
+- migration des réglages (version 9) : l'ancien interrupteur « Catalogues principaux » est remplacé par les quatre cases « Catalogues » ;
+- mise à jour `extVersionCode = 13`.
+
 ## 16.12 — 8 septembre 2026
 
 - **interface de classement lisible** : refonte ergonomique des dialogues de classement des sources Nuvio et des langues/qualités avec boutons flèches compacts sans marges intrusives, libellés aérés et clairs, désactivation visuelle propre des flèches en tête/queue de liste et persistance immédiate ;

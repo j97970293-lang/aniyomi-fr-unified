@@ -5,7 +5,10 @@ import android.content.SharedPreferences
 /** Préférences partagées par les catalogues, Stremio et le moteur Nuvio. */
 object FrSettings {
     const val KEY_SETTINGS_VERSION = "fr_unified_settings_version"
-    const val SETTINGS_VERSION = 8
+    const val SETTINGS_VERSION = 9
+
+    /** Langue de l'interface de l'extension (français par défaut, anglais en option). */
+    const val KEY_UI_LANGUAGE = "ui_language"
 
     /** Serveurs DNS personnalisés (IP, IP:port ou URL DoH, un par ligne). */
     const val KEY_DNS_HOSTS = "dns_hosts"
@@ -46,6 +49,9 @@ object FrSettings {
     const val KEY_NUVIO_LAST_UPDATE = "nuvio_last_update"
     const val KEY_STREAM_ORDER = "stream_order"
     const val KEY_CUSTOM_QUALITIES = "custom_qualities"
+
+    /** Langues ajoutées au classement des flux (EN, TR, …) — tokens de 2 à 3 lettres. */
+    const val KEY_STREAM_LANGUAGES = "stream_languages"
     const val KEY_QUICK_SEARCH = "quick_search"
     const val KEY_BACKUP_AUTO_RESTORE = "backup_auto_restore"
     const val KEY_BACKUP_URL = "backup_url"
@@ -56,7 +62,7 @@ object FrSettings {
     const val KEY_COOKIES = "nuvio_cookies"
 
     const val KEY_TMDB = "tmdb_api_key"
-    const val KEY_USE_MAIN_CATALOGS = "use_main_catalogs"
+    const val KEY_USE_MAIN_CATALOGS = "use_main_catalogs" // remplacé par la déduction TMDB + AniList (16.13)
     const val KEY_USE_TMDB = "use_tmdb_catalog"
     const val KEY_USE_ANIME = "use_anime_catalog" // clé historique, désormais dédiée à AniList
     const val KEY_USE_JIKAN = "use_jikan_catalog"
@@ -157,9 +163,10 @@ object FrSettings {
     )
 
     /**
-     * Une installation neuve active tous les providers compatibles avec les langues choisies.
-     * Les entrées préfixées par `!` sont des exclusions de sécurité ; Movix reste proposé dans
-     * le sélecteur mais son flux actuellement refusé en HTTP 403 ne doit pas être actif d'office.
+     * Une installation neuve active tous les providers des dépôts par défaut, français ou
+     * non : aucune langue ne bloque l'exécution d'un site. Les entrées préfixées par `!` sont
+     * des exclusions de sécurité ; Movix reste proposé dans le sélecteur mais son flux
+     * actuellement refusé en HTTP 403 ne doit pas être actif d'office.
      */
     const val DEFAULT_NUVIO_ENABLED = "all\n!movix"
 
@@ -196,9 +203,28 @@ object FrSettings {
     val DEFAULT_NUVIO_DISABLED: Set<String> = GOWARU_NUVIO_IDS - RECOMMENDED_NUVIO_IDS.toSet()
     val DEFAULT_NUVIO_PRIORITY = listOf("VF", "VFF", "VFQ", "MULTI", "VOSTFR", "1080", "HD")
 
+    /**
+     * Langues que l'utilisateur peut ajouter au classement des flux, au-delà de
+     * VF/VFF/VFQ/MULTI/VOSTFR/VO : codes ISO-639-1 avec drapeau. Un site non français
+     * (EN, TR, ES…) devient alors un critère classable comme les autres.
+     */
+    val ADDABLE_STREAM_LANGUAGES = listOf(
+        "en", "es", "de", "it", "pt", "tr", "nl", "pl", "ru", "ar",
+        "hi", "id", "ko", "ja", "vi", "th", "el", "cs", "sv", "da",
+    )
+
+    /** Langues personnalisées du classement des flux (tokens majuscules, ex. « EN », « TR »). */
+    val customLanguages: List<String>
+        get() = string(KEY_STREAM_LANGUAGES, "")
+            .split(Regex("[,\\n; ]+"))
+            .map { it.trim().uppercase() }
+            .filter { it.length in 2..3 && it.all(Char::isLetter) }
+            .filterNot { it in StreamLabel.LANGUAGE_ORDER }
+            .distinct()
+
     /** Tous les critères de flux connus du classement à flèches (langues puis qualités). */
     val STREAM_CRITERIA: List<String>
-        get() = StreamLabel.LANGUAGE_ORDER +
+        get() = StreamLabel.LANGUAGE_ORDER + customLanguages +
             (customQualities + StreamLabel.QUALITY_VALUES).distinct().sortedDescending().map(StreamLabel::qualityText)
 
     /**
@@ -262,8 +288,15 @@ object FrSettings {
 
     val stremioUrls: List<String>
         get() {
-            val configured = string(KEY_STREMIO, DEFAULT_STREMIO_ADDONS.joinToString("\n"))
-                .lineSequence().map(::cleanStremioUrl).filter(String::isNotBlank)
+            // Une liste explicitement vidée (suppression d'addons) n'est pas
+            // remplacée par les valeurs par défaut ; celles-ci restent énumérées
+            // mais passent par la liste de désactivation si elles ont été supprimées.
+            val raw = if (has(KEY_STREMIO)) {
+                string(KEY_STREMIO, "")
+            } else {
+                DEFAULT_STREMIO_ADDONS.joinToString("\n")
+            }
+            val configured = raw.lineSequence().map(::cleanStremioUrl).filter(String::isNotBlank)
                 .filterNot(::isDefaultTmdbAddon)
             return (configured + DEFAULT_STREMIO_ADDONS).distinct().toList()
         }
@@ -295,8 +328,16 @@ object FrSettings {
 
     val useNuvio: Boolean get() = bool(KEY_USE_NUVIO, true)
     val nuvioRepos: List<String>
-        get() = string(KEY_NUVIO_REPOS, DEFAULT_NUVIO_REPOS.joinToString("\n"))
-            .lineSequence().map(String::trim).filter(String::isNotBlank).distinct().toList()
+        get() {
+            // Une liste explicitement vidée (tous les dépôts supprimés) n'est pas
+            // remplacée par les dépôts par défaut.
+            val raw = if (has(KEY_NUVIO_REPOS)) {
+                string(KEY_NUVIO_REPOS, "")
+            } else {
+                DEFAULT_NUVIO_REPOS.joinToString("\n")
+            }
+            return raw.lineSequence().map(String::trim).filter(String::isNotBlank).distinct().toList()
+        }
     val nuvioReposDisabled: Set<String>
         get() = string(KEY_NUVIO_REPOS_DISABLED, "")
             .lineSequence().map(String::trim).filter(String::isNotBlank).toSet()
@@ -316,8 +357,12 @@ object FrSettings {
             .filter(String::isNotBlank)
             .toSet()
             .ifEmpty { setOf("fr") }
+    /**
+     * Nombre maximal de flux par site (0 = illimité, valeur par défaut depuis la 16.13 :
+     * les sites fournissent souvent 8 à 20 liens par épisode, comme dans NuviO).
+     */
     val nuvioMaxPerScraper: Int
-        get() = string(KEY_NUVIO_MAX, "4").toIntOrNull()?.coerceIn(0, 200) ?: 4
+        get() = string(KEY_NUVIO_MAX, "0").toIntOrNull()?.coerceIn(0, 200) ?: 0
     val nuvioOrder: List<String>
         get() = string(KEY_NUVIO_ORDER, RECOMMENDED_NUVIO_IDS.joinToString("\n"))
             .lineSequence().map(String::trim).filter(String::isNotBlank).toList()
@@ -370,14 +415,14 @@ object FrSettings {
     val streamOrder: List<String>
         get() = parseStreamOrder(string(KEY_STREAM_ORDER, "")).ifEmpty { DEFAULT_STREAM_ORDER }
 
-    /** Normalise une liste de critères saisie ou enregistrée (`vf, 1080P, 4k` → `VF, 1080p, 4K`). */
+    /** Normalise une liste de critères saisie ou enregistrée (`vf, 1080P, 4k, en` → `VF, 1080p, 4K, EN`). */
     internal fun parseStreamOrder(raw: String): List<String> = raw
         .split(Regex("[,\\n;]"))
         .map(String::trim)
         .filter(String::isNotBlank)
         .mapNotNull { token ->
             StreamLabel.qualityValue(token)?.let(StreamLabel::qualityText)
-                ?: token.uppercase().takeIf { it in StreamLabel.LANGUAGE_ORDER }
+                ?: token.uppercase().takeIf { it in StreamLabel.LANGUAGE_ORDER || it in customLanguages }
         }
         .distinct()
 
@@ -397,8 +442,14 @@ object FrSettings {
     val nuvioReferer: String get() = string(KEY_REFERER, "https://www.google.com/").trim()
     val nuvioCookies: String get() = string(KEY_COOKIES, "").trim()
 
+    /** Langue de l'interface (français par défaut, anglais en option). */
+    val uiLanguage: String
+        get() = string(KEY_UI_LANGUAGE, L10n.FR).lowercase()
+            .takeIf { it in L10n.UI_LANGUAGE_LABELS } ?: L10n.FR
+
     val tmdbApiKey: String get() = string(KEY_TMDB, DEFAULT_TMDB_KEY).trim().ifBlank { DEFAULT_TMDB_KEY }
-    val useMainCatalogs: Boolean get() = bool(KEY_USE_MAIN_CATALOGS, true)
+    /** Déduit : des catalogues principaux existent si TMDB ou AniList est actif. */
+    val useMainCatalogs: Boolean get() = useTmdbCatalog || useAniListCatalog
     val useTmdbCatalog: Boolean get() = bool(KEY_USE_TMDB, true)
     val useAniListCatalog: Boolean get() = bool(KEY_USE_ANIME, true)
     val useJikanCatalog: Boolean get() = bool(KEY_USE_JIKAN, true)

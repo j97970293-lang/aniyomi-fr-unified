@@ -55,7 +55,10 @@ class NuvioSelectionTest {
             listOf(englishProvider, manifestDisabledProvider),
             includeDisabled = false,
         )
-        assertTrue(runtime.isEmpty())
+        // La langue ne bloque plus l'exécution : un provider anglais reste
+        // sélectionnable même lorsque les langues cochées sont « fr ».
+        assertTrue("Language filter still blocks a site from running", runtime.any { it.id == "castle" })
+        assertTrue(runtime.none { it.id == "manual-provider" })
     }
 
     private fun preferences(values: Map<String, Any?>): SharedPreferences = Proxy.newProxyInstance(

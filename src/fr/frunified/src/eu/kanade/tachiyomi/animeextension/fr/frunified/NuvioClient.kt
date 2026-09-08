@@ -125,12 +125,34 @@ object NuvioClient {
 
     /** Tous les scrapeurs des dépôts configurés, avec inclusion facultative des désactivés pour l'interface. */
     suspend fun scrapers(includeDisabled: Boolean = false): List<NuvioScraper> = coroutineScope {
-        val repos = FrSettings.nuvioRepos.ifEmpty { FrSettings.DEFAULT_NUVIO_REPOS }
-            .filter { FrSettings.isNuvioRepoEnabled(it) }
+        // La liste explicitement vidée (tous les dépôts supprimés) reste vide.
+        val repos = FrSettings.nuvioRepos.filter { FrSettings.isNuvioRepoEnabled(it) }
         val loaded = repos.map { repo ->
             async { withTimeoutOrNull(20_000L) { manifest(repo) }.orEmpty() }
         }.awaitAll().flatten()
         selectableScrapers(loaded, includeDisabled)
+    }
+
+    /**
+     * Libellé du dépôt d'origine d'une source, comme dans l'application NuviO :
+     * « D3adlyRocket/Anime-Nuvio » pour un dépôt GitHub, « serveur.com/nuvio » sinon.
+     * L'utilisateur doit toujours savoir de quel dépôt vient chaque site (dépôt
+     * français ou international).
+     */
+    fun repoLabel(repoBase: String): String {
+        val noScheme = repoBase.trim().substringAfter("://").removeSuffix("/").removeSuffix("manifest.json")
+        val parts = noScheme.split('/').filter(String::isNotBlank)
+        return when {
+            noScheme.startsWith("raw.githubusercontent.com", true) && parts.size >= 3 ->
+                "${parts[1]}/${parts[2]}"
+
+            noScheme.startsWith("github.com", true) && parts.size >= 3 ->
+                "${parts[1]}/${parts[2]}"
+
+            parts.size >= 2 -> "${parts[0]}/${parts[1]}"
+
+            else -> noScheme
+        }
     }
 
     internal fun selectableScrapers(
@@ -154,9 +176,10 @@ object NuvioClient {
                     )
                 }
         }
-        // Le sélecteur doit montrer le contenu de tous les dépôts ajoutés.
-        // Le filtre de langues ne s'applique qu'à l'exécution des providers.
-        .filter { includeDisabled || FrSettings.isNuvioLanguageEnabled(it.contentLanguage) }
+        // Aucune configuration de langue n'empêche un site d'être exécuté :
+        // tous les sites activés partent, y compris les sites non français.
+        // La langue de chaque flux est ensuite classée par l'ordre des critères
+        // (VF, VOSTFR, VO, EN, TR…) dans le classement à flèches.
         // Un dépôt ajouté plus tard remplace la variante par défaut portant le même id.
         .associateBy { it.id.lowercase() }
         .values
@@ -280,12 +303,13 @@ object NuvioClient {
         val elapsedMs: Long,
     ) {
         fun summary(): String = buildString {
-            append("Dépôts relus : ").append(repositories).append(" · sources actives : ").append(scrapers)
+            append(L10n.t("Dépôts relus : ", "Repositories re-read: ")).append(repositories)
+            append(" · ").append(L10n.t("sources actives : ", "active sources: ")).append(scrapers)
             append('\n')
-            append("Scripts mis à jour : ").append(updated)
-            append(" · inchangés : ").append(unchanged)
-            if (failed > 0) append(" · en échec : ").append(failed)
-            append(" (").append(elapsedMs / 1000).append(" s)")
+            append(L10n.t("Scripts mis à jour : ", "Scripts updated: ")).append(updated)
+            append(" · ").append(L10n.t("inchangés : ", "unchanged: ")).append(unchanged)
+            if (failed > 0) append(" · ").append(L10n.t("en échec : ", "failed: ")).append(failed)
+            append(" (").append(elapsedMs / 1000).append(L10n.t(" s)", " s)"))
         }
     }
 
@@ -298,8 +322,7 @@ object NuvioClient {
      */
     suspend fun updateSources(): UpdateReport = updateLock.withLock {
         val startedAt = System.currentTimeMillis()
-        val repos = FrSettings.nuvioRepos.ifEmpty { FrSettings.DEFAULT_NUVIO_REPOS }
-            .filter { FrSettings.isNuvioRepoEnabled(it) }
+        val repos = FrSettings.nuvioRepos.filter { FrSettings.isNuvioRepoEnabled(it) }
         repos.forEach(::invalidateRepository)
         val scrapers = runCatching { scrapers() }.getOrDefault(emptyList())
         val results = coroutineScope {
@@ -983,11 +1006,21 @@ object NuvioClient {
                         count++
                         if (acceptingLinks.get()) callback(link)
                     }
-                    lastResults[scraper.id] = if (emitted) {
-                        "✓ $count lien(s)" + (if (rejected > 0) " · $rejected refusé(s)" else "")
+                    val linksLabel = if (count == 1) {
+                        L10n.t("lien", "link")
                     } else {
-                        "✓ 0 lien" +
-                            (if (rejected > 0) " · $rejected refusé(s)" else "") +
+                        L10n.t("liens", "links")
+                    }
+                    val rejectedSuffix = if (rejected > 0) {
+                        " · $rejected " + L10n.t("refusé(s)", "rejected")
+                    } else {
+                        ""
+                    }
+                    lastResults[scraper.id] = if (emitted) {
+                        "✓ $count $linksLabel" + rejectedSuffix
+                    } else {
+                        "✓ 0 " + L10n.t("lien", "links") +
+                            rejectedSuffix +
                             diagSuffix(scraper.id)
                     }
                     emitted

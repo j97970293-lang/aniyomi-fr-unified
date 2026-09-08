@@ -13,13 +13,15 @@ import kotlin.concurrent.thread
 
 class NuvioLanguageRuntimeTest {
     @Test
-    fun nonFrenchProviderIsFilteredByLanguageAndRunsThroughRhino() = runBlocking {
+    fun nonFrenchProviderRunsThroughRhinoWithoutLanguageFiltering() = runBlocking {
         LanguageServer().use { server ->
             val repository = "http://127.0.0.1:${server.port}/manifest.json"
+            // Aucune configuration de langue ne bloque l'exécution d'un site :
+            // un provider turc s'exécute comme un provider français.
             FrSettings.init(preferences(repository, "fr"))
             assertTrue(
-                "Turkish provider leaked into a French-only runtime selection",
-                NuvioClient.scrapers().none { it.id == "turkish-runtime" },
+                "Turkish provider was filtered out of the runtime selection",
+                NuvioClient.scrapers().any { it.id == "turkish-runtime" },
             )
 
             FrSettings.init(preferences(repository, "tr"))

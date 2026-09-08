@@ -13,8 +13,8 @@ object ExternalSourceImporter {
     ) {
         val summary: String
             get() = when (kind) {
-                Kind.NUVIO -> "Dépôt Nuvio détecté : $name"
-                Kind.STREMIO -> "Addon Stremio détecté : $name"
+                Kind.NUVIO -> L10n.t("Dépôt Nuvio détecté : $name", "Nuvio repository detected: $name")
+                Kind.STREMIO -> L10n.t("Addon Stremio détecté : $name", "Stremio addon detected: $name")
             }
     }
 

@@ -301,8 +301,9 @@ object StremioCatalog {
         val elapsedMs: Long,
     ) {
         fun summary(): String =
-            "Manifests : $succeeded/$manifests · échecs : $failed\n" +
-                "Catalogues détectés : $catalogs (${elapsedMs / 1000} s)"
+            L10n.t("Manifests : ", "Manifests: ") + "$succeeded/$manifests · " +
+                L10n.t("échecs : ", "failures: ") + failed + "\n" +
+                L10n.t("Catalogues détectés : ", "Catalogs detected: ") + "$catalogs (${elapsedMs / 1000} s)"
     }
 
     /** Force le rechargement parallèle des manifests et de chaque entrée catalogs[]. */
@@ -497,9 +498,9 @@ object StremioCatalog {
     private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 
     private fun typeLabel(type: String): String = when (type.lowercase()) {
-        "movie" -> "Films"
-        "series" -> "Séries"
-        "anime" -> "Animés"
+        "movie" -> L10n.t("Films", "Movies")
+        "series" -> L10n.t("Séries", "Series")
+        "anime" -> L10n.t("Animés", "Anime")
         "tv" -> "TV"
         else -> type.replaceFirstChar(Char::uppercase)
     }
