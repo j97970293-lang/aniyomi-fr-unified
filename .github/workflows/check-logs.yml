@@ -45,7 +45,12 @@ jobs:
               tail -n 40 /tmp/spotless-apply.log
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            git diff --stat > .spotless-log.txt || true
+            {
+              echo '## CHECK LOG (tail 250)'
+              tail -n 250 /tmp/spotless.log
+              echo '## APPLY DIFF'
+              git diff --stat
+            } > .spotless-log.txt
           fi
 
       - name: Commit applied fixes
