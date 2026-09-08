@@ -60,10 +60,6 @@ object NuvioClient {
         val contentLanguage: List<String>,
         val description: String,
         val manifestEnabled: Boolean = true,
-        /** Valeurs par défaut des variables d'environnement déclarées par le manifest. */
-        val envDefaults: Map<String, String> = emptyMap(),
-        /** Clés d'environnement obligatoires (le site n'exécute pas sans elles). */
-        val requiredEnv: List<String> = emptyList(),
     ) {
         val isFrench: Boolean get() = contentLanguage.any { it.startsWith("fr") }
         val scriptUrl: String
@@ -230,9 +226,6 @@ object NuvioClient {
                 contentLanguage = stringArray(entry.optJSONArray("contentLanguage")),
                 description = entry.optString("description"),
                 manifestEnabled = entry.optBoolean("enabled", true),
-                envDefaults = envObject(entry.optJSONObject("env")),
-                requiredEnv = stringArray(entry.optJSONArray("requiredEnv"))
-                    .ifEmpty { envObject(entry.optJSONObject("requiredEnv")).keys.toList() },
             )
         }
     }
@@ -240,14 +233,6 @@ object NuvioClient {
     private fun stringArray(array: JSONArray?): List<String> {
         if (array == null) return emptyList()
         return (0 until array.length()).mapNotNull { i -> array.optString(i).takeIf { it.isNotBlank() } }
-    }
-
-    /** Variables d'environnement déclarées par un manifest (`{ "API_KEY": "défaut" }`). */
-    private fun envObject(envJson: JSONObject?): Map<String, String> {
-        if (envJson == null) return emptyMap()
-        return envJson.keys().asSequence()
-            .mapNotNull { key -> key.takeIf { envJson.optString(key).isNotBlank() } }
-            .associateWith { envJson.optString(it) }
     }
 
     // ----------------------------------------------------- exécution JS
@@ -604,7 +589,7 @@ object NuvioClient {
         return Regex("(?:return|case|throw|else|do|typeof|delete|void|yield)\\s*$").containsMatchIn(before)
     }
 
-    /** Exécute tous les scrapeurs activés en parallèle (bornés par le sémaphore de concurrence). */
+    /** Exécute les scrapeurs activés selon le mode rapide, équilibré ou complet. */
     suspend fun streams(payload: PlayPayload, callback: (Video) -> Unit): Boolean {
         if (!FrSettings.useNuvio) return false
         lastResults.clear()
@@ -617,9 +602,15 @@ object NuvioClient {
         val mediaType = if (payload.isSeries) "tv" else "movie"
         val season = if (payload.isSeries) (payload.season ?: 1) else 0
         val episode = if (payload.isSeries) (payload.episode ?: 1) else 0
+        val successesWanted = when (FrSettings.nuvioSearchMode) {
+            "complete" -> Int.MAX_VALUE
+            "balanced" -> 2
+            else -> 1
+        }
         val (tmdbTarget, absoluteTarget) = resolveEpisodeTargets(tmdbId, season, episode, payload)
         return runParallelScrapers(
             all,
+            successesWanted,
             limiter,
             tmdbId,
             mediaType,
@@ -632,11 +623,10 @@ object NuvioClient {
 
     /**
      * Tous les providers sont lancés en parallèle (bornés par le sémaphore de
-     * concurrence) et interrogés jusqu'au bout : il n'y a plus de mode rapide,
-     * équilibré ou complet ni d'arrêt quand une VF est trouvée. Chaque site actif
-     * renvoie ses liens, bornés uniquement par le réglage « flux maximum par site »
-     * (illimité par défaut, comme dans NuviO) — c'est pourquoi la recherche
-     * affiche autant de serveurs que les sites en fournissent.
+     * concurrence). Les modes rapide et équilibré n'attendent plus la fin d'un
+     * lot : dès qu'assez de sources ont réussi (et qu'une VF a été vue s'il y
+     * avait une langue explicite), les providers encore en file sont sautés ;
+     * ceux déjà en vol terminent pour ne pas perdre une VF.
      *
      * Pour les animés longs (One Piece…) ou les séries multi-saisons, chaque scrapeur
      * reçoit d'abord le format adapté à son type (numérotation absolue S1E1120 pour les
@@ -645,6 +635,7 @@ object NuvioClient {
      */
     private suspend fun runParallelScrapers(
         scrapers: List<NuvioScraper>,
+        successesWanted: Int,
         limiter: Semaphore,
         tmdbId: Int,
         mediaType: String,
@@ -653,21 +644,55 @@ object NuvioClient {
         payload: PlayPayload,
         callback: (Video) -> Unit,
     ): Boolean = coroutineScope {
+        val successes = AtomicInteger(0)
+        val sawExplicitAudio = AtomicBoolean(false)
+        val foundFrenchAudio = AtomicBoolean(false)
+        val stopNew = AtomicBoolean(false)
+
+        fun enough(): Boolean {
+            return successesWanted != Int.MAX_VALUE &&
+                successes.get() >= successesWanted &&
+                (!sawExplicitAudio.get() || foundFrenchAudio.get())
+        }
+
         val results = scrapers.map { scraper ->
             async {
+                if (stopNew.get()) return@async false
                 limiter.withPermit {
+                    if (stopNew.get()) return@withPermit false
                     val isAnimeScraper = scraper.id in ANIME_FOCUSED_IDS
                     val (pS, pE) = if (isAnimeScraper) absoluteTarget else tmdbTarget
                     val (fS, fE) = if (isAnimeScraper) tmdbTarget else absoluteTarget
 
                     var ok = runCatching {
-                        runScraper(scraper, tmdbId, mediaType, pS, pE, payload, callback)
+                        runScraper(scraper, tmdbId, mediaType, pS, pE, payload) { video ->
+                            StreamLabel.languageIn(video.videoTitle)?.let { tag ->
+                                sawExplicitAudio.set(true)
+                                if (tag in setOf("VF", "VFF", "VFQ", "MULTI")) {
+                                    foundFrenchAudio.set(true)
+                                }
+                            }
+                            callback(video)
+                        }
                     }.getOrDefault(false)
 
                     if (!ok && (pS to pE) != (fS to fE)) {
                         ok = runCatching {
-                            runScraper(scraper, tmdbId, mediaType, fS, fE, payload, callback)
+                            runScraper(scraper, tmdbId, mediaType, fS, fE, payload) { video ->
+                                StreamLabel.languageIn(video.videoTitle)?.let { tag ->
+                                    sawExplicitAudio.set(true)
+                                    if (tag in setOf("VF", "VFF", "VFQ", "MULTI")) {
+                                        foundFrenchAudio.set(true)
+                                    }
+                                }
+                                callback(video)
+                            }
                         }.getOrDefault(false)
+                    }
+
+                    if (ok) {
+                        successes.incrementAndGet()
+                        if (enough()) stopNew.set(true)
                     }
                     ok
                 }
@@ -834,14 +859,6 @@ object NuvioClient {
         payload: PlayPayload,
         callback: (Video) -> Unit,
     ): Boolean = withContext(Dispatchers.IO) {
-        val missing = missingRequiredEnv(scraper)
-        if (missing.isNotEmpty()) {
-            lastResults[scraper.id] = L10n.t(
-                "à configurer : ${missing.joinToString(", ")}",
-                "needs configuration: ${missing.joinToString(", ")}",
-            )
-            return@withContext false
-        }
         val startedAt = System.currentTimeMillis()
         fetchLog[scraper.id] = mutableListOf()
         consoleLog[scraper.id] = emptyList()
@@ -884,7 +901,7 @@ object NuvioClient {
                     // sans cela RegExp et les messages Rhino sont introuvables (cf. installRuntime).
                     installRuntime(cx, scope)
                     cx.evaluateString(scope, JS_ENV, "prelude", 1, null)
-                    injectEnv(scope, scraper)
+                    injectEnv(scope)
 
                     // module.exports / global.getStreams : les deux formats de sortie
                     val module = cx.newObject(scope)
@@ -1002,8 +1019,7 @@ object NuvioClient {
                     lastResults[scraper.id] = if (emitted) {
                         "✓ $count $linksLabel" + rejectedSuffix
                     } else {
-                        "✓ 0 " +
-                            L10n.t("lien", "links") +
+                        "✓ 0 " + L10n.t("lien", "links") +
                             rejectedSuffix +
                             diagSuffix(scraper.id)
                     }
@@ -1677,28 +1693,12 @@ object NuvioClient {
 
     // ------------------------------------------------------ fonctions JS
 
-    /**
-     * Variables d'environnement effectives d'une source : les valeurs par défaut
-     * du manifest complétées par les valeurs saisies dans les réglages.
-     */
-    fun mergedEnv(scraper: NuvioScraper): Map<String, String> =
-        scraper.envDefaults + FrSettings.sourceEnvValues(scraper.id)
-
-    /** Clés obligatoires manquantes (sans valeur ni valeur par défaut). */
-    fun missingRequiredEnv(scraper: NuvioScraper): List<String> {
-        val merged = mergedEnv(scraper)
-        return scraper.requiredEnv.filter { merged[it].isNullOrBlank() }
-    }
-
-    /** Injecte les clés API globales et la configuration de la source dans process.env. */
-    private fun injectEnv(scope: Scriptable, scraper: NuvioScraper) {
+    /** Injecte les clés API de l'utilisateur dans process.env (lu par les bundles). */
+    private fun injectEnv(scope: Scriptable) {
         runCatching {
             val process = scope.get("process", scope) as? Scriptable ?: return
             val env = ScriptableObject.getProperty(process, "env") as? Scriptable ?: return
             FrSettings.apiTokens.forEach { (k, v) ->
-                env.put(k, env, v)
-            }
-            mergedEnv(scraper).forEach { (k, v) ->
                 env.put(k, env, v)
             }
         }
@@ -2169,128 +2169,6 @@ if (!Array.prototype.flat) {
     }
     return out;
   };
-}
-
-// ----- String : padStart / padEnd / trimStart / trimEnd / includes / startsWith / endsWith
-// (usage courant des bundles transpilés ; Rhino 1.9 ne les garantit pas tous)
-if (!String.prototype.padStart) {
-  String.prototype.padStart = function (len, fill) {
-    var s = String(this);
-    len = Math.max(0, Math.floor(Number(len) || 0));
-    if (s.length >= len) return s;
-    var pad = (fill == null) ? ' ' : String(fill);
-    if (!pad.length) pad = ' ';
-    var out = '';
-    while (out.length < len - s.length) out += pad;
-    return out.slice(0, len - s.length) + s;
-  };
-}
-if (!String.prototype.padEnd) {
-  String.prototype.padEnd = function (len, fill) {
-    var s = String(this);
-    len = Math.max(0, Math.floor(Number(len) || 0));
-    if (s.length >= len) return s;
-    var pad = (fill == null) ? ' ' : String(fill);
-    if (!pad.length) pad = ' ';
-    var out = '';
-    while (out.length < len - s.length) out += pad;
-    return s + out.slice(0, len - s.length);
-  };
-}
-if (!String.prototype.trimStart) String.prototype.trimStart = function () { return String(this).replace(/^\s+/, ''); };
-if (!String.prototype.trimEnd) String.prototype.trimEnd = function () { return String(this).replace(/\s+$/, ''); };
-if (!String.prototype.trimLeft) String.prototype.trimLeft = String.prototype.trimStart;
-if (!String.prototype.trimRight) String.prototype.trimRight = String.prototype.trimEnd;
-if (!String.prototype.includes) {
-  String.prototype.includes = function (sub, pos) {
-    return String(this).indexOf(String(sub), pos || 0) !== -1;
-  };
-}
-if (!String.prototype.startsWith) {
-  String.prototype.startsWith = function (pre, pos) {
-    var s = String(this);
-    pos = Math.max(0, Math.min(Number(pos) || 0, s.length));
-    return s.substring(pos, pos + String(pre).length) === String(pre);
-  };
-}
-if (!String.prototype.endsWith) {
-  String.prototype.endsWith = function (suf, len) {
-    var s = String(this);
-    len = len == null ? s.length : Math.min(Number(len) || 0, s.length);
-    return s.substring(len - String(suf).length, len) === String(suf);
-  };
-}
-
-// ----- Array : includes / find / findIndex / Array.from (ES2015-2017)
-if (!Array.prototype.includes) {
-  Array.prototype.includes = function (v, from) {
-    for (var i = (from || 0); i < this.length; i++) {
-      if (this[i] === v || (this[i] !== this[i] && v !== v)) return true;
-    }
-    return false;
-  };
-}
-if (!Array.prototype.find) {
-  Array.prototype.find = function (fn, thisArg) {
-    for (var i = 0; i < this.length; i++) {
-      if (i in this && fn.call(thisArg, this[i], i, this)) return this[i];
-    }
-    return undefined;
-  };
-}
-if (!Array.prototype.findIndex) {
-  Array.prototype.findIndex = function (fn, thisArg) {
-    for (var i = 0; i < this.length; i++) {
-      if (i in this && fn.call(thisArg, this[i], i, this)) return i;
-    }
-    return -1;
-  };
-}
-if (!Array.from) {
-  Array.from = function (obj, mapFn, thisArg) {
-    var out = [];
-    if (obj) {
-      if (typeof obj.length === 'number') {
-        for (var i = 0; i < obj.length; i++) {
-          if (!(i in obj)) continue;
-          out.push(mapFn ? mapFn.call(thisArg, obj[i], i) : obj[i]);
-        }
-      } else {
-        for (var k in obj) {
-          if (Object.prototype.hasOwnProperty.call(obj, k)) {
-            out.push(mapFn ? mapFn.call(thisArg, obj[k], k) : obj[k]);
-          }
-        }
-      }
-    }
-    return out;
-  };
-}
-
-// ----- Object.assign / Number.isInteger / Number.isNaN / Number.isFinite
-if (!Object.assign) {
-  Object.assign = function (target) {
-    for (var i = 1; i < arguments.length; i++) {
-      var src = arguments[i];
-      if (src == null) continue;
-      for (var k in src) {
-        if (Object.prototype.hasOwnProperty.call(src, k)) target[k] = src[k];
-      }
-    }
-    return target;
-  };
-}
-if (!Number.isInteger) {
-  Number.isInteger = function (v) {
-    return typeof v === 'number' && isFinite(v) && Math.floor(v) === v;
-  };
-}
-if (!Number.isNaN) Number.isNaN = function (v) { return typeof v === 'number' && isNaN(v); };
-if (!Number.isFinite) Number.isFinite = function (v) { return typeof v === 'number' && isFinite(v); };
-
-// ----- performance.now (Date.now en repli)
-if (typeof performance !== 'object' || !performance || !performance.now) {
-  var performance = { now: function () { return Date.now(); } };
 }
 
 // ----- Réponse fetch

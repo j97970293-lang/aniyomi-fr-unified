@@ -11,7 +11,10 @@ class NuvioSelectionTest {
     fun pluginPickerShowsProvidersFromAddedRepositoriesBeforeLanguageFiltering() {
         FrSettings.init(
             preferences(
-                mapOf(FrSettings.KEY_NUVIO_ENABLED to "all"),
+                mapOf(
+                    FrSettings.KEY_NUVIO_LANGUAGES to "fr",
+                    FrSettings.KEY_NUVIO_ENABLED to "all",
+                ),
             ),
         )
         val englishProvider = NuvioClient.NuvioScraper(

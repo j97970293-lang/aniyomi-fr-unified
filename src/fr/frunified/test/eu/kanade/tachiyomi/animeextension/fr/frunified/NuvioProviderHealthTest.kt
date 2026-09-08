@@ -45,6 +45,7 @@ class NuvioProviderHealthTest {
                     FrSettings.KEY_NUVIO_REPOS to
                         "https://raw.githubusercontent.com/Gowaru/gowaru-nuvio-providers/refs/heads/main/manifest.json",
                     FrSettings.KEY_NUVIO_ENABLED to FrSettings.RECOMMENDED_NUVIO_IDS.joinToString("\n"),
+                    FrSettings.KEY_NUVIO_SEARCH_MODE to "fast",
                     FrSettings.KEY_NUVIO_MAX to "8",
                 ),
             ),

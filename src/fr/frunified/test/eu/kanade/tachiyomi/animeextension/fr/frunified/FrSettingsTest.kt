@@ -72,13 +72,14 @@ class FrSettingsTest {
     }
 
     @Test
-    fun catalogsCanBeDisabledIndependentlyAndAnimeIsDeduced() {
+    fun mainCatalogsCanBeDisabledIndependentlyAndLanguageAliasesWork() {
         FrSettings.init(
             preferences(
                 mapOf(
                     FrSettings.KEY_USE_TMDB to false,
                     FrSettings.KEY_USE_ANIME to false,
                     FrSettings.KEY_USE_JIKAN to true,
+                    FrSettings.KEY_NUVIO_LANGUAGES to "hi\nta\nml",
                 ),
             ),
         )
@@ -87,10 +88,10 @@ class FrSettingsTest {
         assertFalse(FrSettings.useAniListCatalog)
         assertTrue(FrSettings.useJikanCatalog)
         assertTrue(FrSettings.useAnimeCatalog)
-        assertFalse(FrSettings.useMainCatalogs)
-
-        FrSettings.init(preferences(mapOf(FrSettings.KEY_USE_TMDB to false)))
-        assertTrue(FrSettings.useMainCatalogs)
+        assertTrue(FrSettings.isNuvioLanguageEnabled(listOf("hin")))
+        assertTrue(FrSettings.isNuvioLanguageEnabled(listOf("tam")))
+        assertTrue(FrSettings.isNuvioLanguageEnabled(listOf("mal")))
+        assertFalse(FrSettings.isNuvioLanguageEnabled(listOf("fr")))
     }
 
     private fun preferences(values: Map<String, Any?>): SharedPreferences = Proxy.newProxyInstance(

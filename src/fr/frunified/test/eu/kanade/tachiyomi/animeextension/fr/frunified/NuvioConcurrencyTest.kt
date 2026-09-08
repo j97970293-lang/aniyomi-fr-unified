@@ -15,14 +15,16 @@ import kotlin.concurrent.thread
 
 class NuvioConcurrencyTest {
     @Test
-    fun allProvidersRunSimultaneouslyAndFetchesStayParallel() = runBlocking {
+    fun fastModeDownloadsAndRunsSeveralProvidersSimultaneously() = runBlocking {
         ConcurrentServer().use { server ->
             FrSettings.init(
                 preferences(
                     mapOf(
                         FrSettings.KEY_NUVIO_REPOS to "http://127.0.0.1:${server.port}/manifest.json",
                         FrSettings.KEY_NUVIO_CONCURRENCY to "3",
+                        FrSettings.KEY_NUVIO_SEARCH_MODE to "fast",
                         FrSettings.KEY_NUVIO_ENABLED to "all",
+                        FrSettings.KEY_NUVIO_LANGUAGES to "fr",
                     ),
                 ),
             )

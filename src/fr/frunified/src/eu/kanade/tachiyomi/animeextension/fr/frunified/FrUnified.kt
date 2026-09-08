@@ -216,13 +216,6 @@ class FrUnified : Source() {
                     editor.putString(FrSettings.KEY_NUVIO_MAX, "0")
                 }
             }
-            if (version < 10) {
-                // Les réglages « modes de recherche » (rapide/équilibré/complet) et
-                // « langues Nuvio » n'existent plus : tous les sites activés partent,
-                // aucune langue ne bloque l'exécution d'un site.
-                editor.remove(FrSettings.KEY_NUVIO_SEARCH_MODE)
-                editor.remove(FrSettings.KEY_NUVIO_LANGUAGES)
-            }
             editor.putInt(FrSettings.KEY_SETTINGS_VERSION, FrSettings.SETTINGS_VERSION)
             editor.apply()
         }
@@ -1473,14 +1466,6 @@ class FrUnified : Source() {
             ),
         ) { showNuvioOptionsPopup(context) }
         action(
-            "action_nuvio_source_config",
-            L10n.t("Configurer les sources (clés API, jetons…)", "Configure sources (API keys, tokens…)"),
-            L10n.t(
-                "Variables d'environnement demandées par certaines sources (manifests avec « env »).",
-                "Environment variables requested by some sources (manifests with « env »).",
-            ),
-        ) { showSourceConfigPopup(context) }
-        action(
             "action_nuvio_diagnostic",
             L10n.t("Diagnostic des sources", "Source diagnostics"),
             L10n.t(
@@ -2061,88 +2046,6 @@ class FrUnified : Source() {
             .show()
     }
 
-    /**
-     * Popup « Configurer les sources » : les variables d'environnement déclarées par
-     * les manifests Nuvio (`env` / `requiredEnv`) sont réglables ici, sans ouvrir
-     * le manifest. Une source dont une clé obligatoire est vide n'est pas exécutée
-     * (signalée « à configurer » dans le diagnostic et le sélecteur).
-     */
-    private fun showSourceConfigPopup(dialogContext: Context) {
-        displayToast(L10n.t("Chargement des sources…", "Loading sources…"))
-        settingsScope.launch {
-            val scrapers = runCatching { NuvioClient.scrapers(includeDisabled = true) }
-                .getOrDefault(emptyList())
-                .filter { it.envDefaults.isNotEmpty() || it.requiredEnv.isNotEmpty() }
-            handler.post {
-                if (scrapers.isEmpty()) {
-                    AlertDialog.Builder(dialogContext)
-                        .setTitle(L10n.t("Configurer les sources", "Configure the sources"))
-                        .setMessage(
-                            L10n.t(
-                                "Aucune source configurée ne demande de variables d'environnement. " +
-                                    "Les clés API génériques restent dans « Paramètres avancés ».",
-                                "No configured source requires environment variables. " +
-                                    "Generic API keys stay in « Advanced settings ».",
-                            ),
-                        )
-                        .setPositiveButton(L10n.t("Fermer", "Close"), null)
-                        .show()
-                    return@post
-                }
-                val density = dialogContext.resources.displayMetrics.density
-                val padding = (density * 12).toInt()
-                val container = LinearLayout(dialogContext).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(padding, padding, padding, padding)
-                }
-                val fields = linkedMapOf<String, LinkedHashMap<String, EditText>>()
-                scrapers.forEach { scraper ->
-                    val keys = (scraper.requiredEnv + scraper.envDefaults.keys).distinct()
-                    container.addView(
-                        TextView(dialogContext).apply {
-                            text = "${FrSettings.flagForLanguages(scraper.contentLanguage)} " +
-                                "${scraper.name} · ${NuvioClient.repoLabel(scraper.repoBase)}"
-                            textSize = 13f
-                            setPadding(0, (density * 8).toInt(), 0, (density * 2).toInt())
-                        },
-                    )
-                    val perScraper = linkedMapOf<String, EditText>()
-                    keys.forEach { key ->
-                        val merged = NuvioClient.mergedEnv(scraper)
-                        val edit = EditText(dialogContext).apply {
-                            hint = key
-                            setText(merged[key].orEmpty())
-                            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-                        }
-                        container.addView(edit)
-                        perScraper[key] = edit
-                    }
-                    fields[scraper.id] = perScraper
-                }
-                AlertDialog.Builder(dialogContext)
-                    .setTitle(L10n.t("Configurer les sources", "Configure the sources"))
-                    .setView(
-                        ScrollView(dialogContext).apply {
-                            addView(container)
-                        },
-                    )
-                    .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
-                    .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
-                        fields.forEach { (scraperId, perScraper) ->
-                            perScraper.forEach { (key, edit) ->
-                                FrSettings.putSourceEnv(scraperId, key, edit.text.toString().trim())
-                            }
-                        }
-                        // La lecture de la configuration se fait à l'exécution : rien à invalider.
-                        displayToast(
-                            L10n.t("Configuration des sources enregistrée", "Source configuration saved"),
-                        )
-                    }
-                    .show()
-            }
-        }
-    }
-
     /** Popup « Options Stremio » : flux maximum + mise à jour automatique. */
     private fun showStremioOptionsPopup(dialogContext: Context) {
         val density = dialogContext.resources.displayMetrics.density
@@ -2288,15 +2191,10 @@ class FrUnified : Source() {
                 } else {
                     ""
                 }
-                val configMark = if (NuvioClient.missingRequiredEnv(scraper).isNotEmpty()) {
-                    L10n.t(" · ⚙️ à configurer", " · ⚙️ to configure")
-                } else {
-                    ""
-                }
                 val status = diagnostics[scraper.id]?.let { " · ${it.take(45)}" }.orEmpty()
                 val flag = FrSettings.flagForLanguages(scraper.contentLanguage)
                 SourceChoice(
-                    label = "$flag ${scraper.name}$recommendation · $origin$configMark$status",
+                    label = "$flag ${scraper.name}$recommendation · $origin$status",
                     value = scraper.id,
                     enabled = FrSettings.isNuvioEnabled(scraper.id),
                 )
@@ -3331,6 +3229,7 @@ class FrUnified : Source() {
                     )
                     appendLine(L10n.t("Scrapeurs détectés : ${all.size}", "Scrapers detected: ${all.size}"))
                     appendLine(L10n.t("Scrapeurs actifs : ${active.size}", "Active scrapers: ${active.size}"))
+                    appendLine("Mode : ${FrSettings.nuvioSearchMode}")
                     if (checks.isEmpty()) {
                         appendLine()
                         append(L10n.t("Aucune source active à tester.", "No active source to test."))

@@ -18,11 +18,13 @@ class NuvioLanguageRuntimeTest {
             val repository = "http://127.0.0.1:${server.port}/manifest.json"
             // Aucune configuration de langue ne bloque l'exécution d'un site :
             // un provider turc s'exécute comme un provider français.
-            FrSettings.init(preferences(repository))
+            FrSettings.init(preferences(repository, "fr"))
             assertTrue(
                 "Turkish provider was filtered out of the runtime selection",
                 NuvioClient.scrapers().any { it.id == "turkish-runtime" },
             )
+
+            FrSettings.init(preferences(repository, "tr"))
             val videos = mutableListOf<Video>()
             val ok = NuvioClient.streams(
                 PlayPayload(
@@ -40,7 +42,7 @@ class NuvioLanguageRuntimeTest {
         }
     }
 
-    private fun preferences(repository: String): SharedPreferences =
+    private fun preferences(repository: String, language: String): SharedPreferences =
         Proxy.newProxyInstance(
             SharedPreferences::class.java.classLoader,
             arrayOf(SharedPreferences::class.java),
@@ -48,6 +50,7 @@ class NuvioLanguageRuntimeTest {
             val values = mapOf(
                 FrSettings.KEY_NUVIO_REPOS to repository,
                 FrSettings.KEY_NUVIO_ENABLED to "all",
+                FrSettings.KEY_NUVIO_LANGUAGES to language,
                 FrSettings.KEY_NUVIO_CONCURRENCY to "2",
             )
             when (method.name) {
