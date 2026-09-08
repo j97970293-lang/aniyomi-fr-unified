@@ -397,6 +397,7 @@ object FrSettings {
             .distinct()
             .take(4)
             .toList()
+
     val useCustomDns: Boolean get() = dnsHosts.isNotEmpty()
 
     /**

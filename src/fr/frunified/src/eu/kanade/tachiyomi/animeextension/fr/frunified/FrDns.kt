@@ -231,7 +231,7 @@ object FrDns : Dns {
     }
 
     /**
-     * Analyse une réponse DNS filaire. [ANCOUNT] est lu dans l'en-tête (octets 6-7),
+     * Analyse une réponse DNS filaire. ANCOUNT est lu dans l'en-tête (octets 6-7),
      * pas après la question — l'ancienne lecture décalait toutes les réponses.
      */
     internal fun parseResponse(

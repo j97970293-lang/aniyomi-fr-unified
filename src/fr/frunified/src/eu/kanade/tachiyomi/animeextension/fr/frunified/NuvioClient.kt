@@ -1130,16 +1130,6 @@ object NuvioClient {
                 videoTitle = title,
                 resolution = resolution,
                 headers = headers?.toOkHttpHeaders(),
-               payload.titles,
-            ),
-        ).render()
-        val preferred = StreamRanker.isPreferred(title, resolution)
-        return if (kind == "direct") {
-            Video(
-                videoUrl = url!!,
-                videoTitle = title,
-                resolution = resolution,
-                headers = headers?.toOkHttpHeaders(),
                 preferred = preferred,
             )
         } else {
