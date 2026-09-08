@@ -1573,7 +1573,6 @@ class FrUnified : Source() {
         ) { showGuideDialog(context) }
     }
 
-
     /** Séparateur de section : simple, grisé, avec emoji pour une lecture rapide. */
     private fun PreferenceScreen.header(title: String) {
         addPreference(
@@ -3217,8 +3216,8 @@ class FrUnified : Source() {
                     appendLine()
                     appendLine(
                         L10n.t(
-                            "Dépôts : ${FrSettings.nuvioRepos.size} (${repoSummary})",
-                            "Repositories: ${FrSettings.nuvioRepos.size} (${repoSummary})",
+                            "Dépôts : ${FrSettings.nuvioRepos.size} ($repoSummary)",
+                            "Repositories: ${FrSettings.nuvioRepos.size} ($repoSummary)",
                         ),
                     )
                     appendLine(L10n.t("Scrapeurs détectés : ${all.size}", "Scrapers detected: ${all.size}"))
