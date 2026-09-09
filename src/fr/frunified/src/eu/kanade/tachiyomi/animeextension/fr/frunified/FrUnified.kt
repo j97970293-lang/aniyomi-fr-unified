@@ -2032,7 +2032,6 @@ class FrUnified : Source() {
      */
     private class ListPicker(private val dialogContext: Context) {
         private val density = dialogContext.resources.displayMetrics.density
-        private val textColor: Int = TextView(dialogContext).textColor
         val listContainer: LinearLayout = LinearLayout(dialogContext).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(
@@ -2141,7 +2140,6 @@ class FrUnified : Source() {
                 val text = TextView(dialogContext).apply {
                     this.text = fullLabels[index]
                     textSize = 14f
-                    setTextColor(textColor)
                     maxLines = 2
                     ellipsize = TextUtils.TruncateAt.END
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -2732,9 +2730,6 @@ class FrUnified : Source() {
         }
     }
 
-    /** Couleur de texte du thème en cours, lue sur un TextView par défaut (listes et dialogues). */
-    private fun Context.dialogTextColor(): Int = TextView(this).textColor
-
     private fun showNuvioOrderDialog(dialogContext: Context) {
         displayToast(L10n.t("Chargement des sources…", "Loading sources…"))
         settingsScope.launch {
@@ -2863,7 +2858,6 @@ class FrUnified : Source() {
                 val nameView = TextView(dialogContext).apply {
                     text = labelText
                     textSize = 14f
-                    setTextColor(dialogContext.dialogTextColor())
                     maxLines = 2
                     ellipsize = TextUtils.TruncateAt.END
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -2871,7 +2865,6 @@ class FrUnified : Source() {
                 val repoView = TextView(dialogContext).apply {
                     text = "    " + NuvioClient.repoLabel(scraper.repoBase)
                     textSize = 12f
-                    setTextColor(dialogContext.dialogTextColor())
                     alpha = 0.7f
                     maxLines = 1
                     ellipsize = TextUtils.TruncateAt.END
@@ -3008,7 +3001,6 @@ class FrUnified : Source() {
                 val textView = TextView(dialogContext).apply {
                     text = labelText
                     textSize = 14f
-                    setTextColor(dialogContext.dialogTextColor())
                     maxLines = 2
                     ellipsize = TextUtils.TruncateAt.END
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
