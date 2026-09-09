@@ -2063,13 +2063,14 @@ class FrUnified : Source() {
             multi: Boolean,
             checked: BooleanArray,
             selected: Int = -1,
-        ) {
+        ): ListPicker {
             this.multi = multi
             this.fullLabels = items
             this.masterChecked = checked.copyOf()
             this.selected = selected
             visible = items.indices.toList()
             render()
+            return this
         }
 
         /** Applique un filtre de recherche sur les libellés (état conservé). */
