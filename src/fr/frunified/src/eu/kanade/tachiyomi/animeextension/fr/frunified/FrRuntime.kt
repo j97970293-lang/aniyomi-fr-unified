@@ -11,13 +11,6 @@ import java.io.InputStream
 import java.util.concurrent.TimeUnit
 
 /**
- * Accès réseau commun aux catalogues.
- *
- * Le client OkHttp reçoit un DNS personnalisé ([FrDns]) dès l'initialisation afin
- * que toutes les requêtes de l'extension contournent le DNS défaillant de l'appareil.
- */
-
-/**
  * Équivalent suspend de `runCatching` : permet d'entourer un appel suspend par un
  * [Result] sans lambda non-suspend intermédiaire (interdit par la compilation Kotlin).
  */
@@ -26,7 +19,12 @@ internal suspend fun <T> trySuspend(block: suspend () -> T): Result<T> = try {
 } catch (e: Throwable) {
     Result.failure(e)
 }
-
+/**
+ * Accès réseau commun aux catalogues.
+ *
+ * Le client OkHttp reçoit un DNS personnalisé ([FrDns]) dès l'initialisation afin
+ * que toutes les requêtes de l'extension contournent le DNS défaillant de l'appareil.
+ */
 object FrRuntime {
 
     data class RawResult(

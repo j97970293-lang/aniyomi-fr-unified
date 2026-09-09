@@ -1738,8 +1738,6 @@ class FrUnified : Source() {
         runCatching { dialog.show() }
     }
 
-
-
     /** Popup « Réglages DNS avancés » : champ personnalisé + test de résolution. */
     private fun showDnsSettingsPopup(dialogContext: Context) {
         val density = dialogContext.resources.displayMetrics.density
@@ -1902,9 +1900,6 @@ class FrUnified : Source() {
         runCatching { dialog.show() }
     }
 
-
-
-    /** Popup « Catalogues » : les quatre catalogues en cases à cocher (remplace les quatre interrupteurs). */
     /** Popup « Catalogues » : les quatre catalogues en cases à cocher (remplace les quatre interrupteurs). */
     private fun showCatalogsPopup(dialogContext: Context) {
         val rows = listOf(
@@ -1948,8 +1943,6 @@ class FrUnified : Source() {
             .create()
         runCatching { dialog.show() }
     }
-
-
 
     /** Popup « Langues des sous-titres » : codes séparés par des virgules. */
     private fun showSubtitleLangsPopup(dialogContext: Context) {
@@ -3249,8 +3242,6 @@ class FrUnified : Source() {
         runCatching { dialog.show() }
     }
 
-
-
     private fun copyBackupToClipboard(dialogContext: Context, json: String) {
         val clipboard = dialogContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         clipboard?.setPrimaryClip(ClipData.newPlainText("FR Unifié — sauvegarde", json))
@@ -3396,8 +3387,6 @@ class FrUnified : Source() {
         runCatching { dialog.show() }
     }
 
-
-
     private data class BackupFileEntry(val name: String, val uri: Uri)
 
     /** Fichiers JSON de sauvegarde FR Unifié du dossier Téléchargements (best effort). */
@@ -3492,8 +3481,6 @@ class FrUnified : Source() {
         }
         runCatching { dialog.show() }
     }
-
-
 
     private fun showBackupPasteDialog(dialogContext: Context) {
         val input = EditText(dialogContext).apply {
