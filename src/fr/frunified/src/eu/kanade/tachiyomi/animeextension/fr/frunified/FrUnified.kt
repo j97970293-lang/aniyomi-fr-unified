@@ -27,7 +27,6 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import androidx.core.content.FileProvider
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
@@ -2875,7 +2874,7 @@ class FrUnified : Source() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             minLines = 8
         }
-        AlertDialog.Builder(dialogContext)
+        val dialog = AlertDialog.Builder(dialogContext)
             .setTitle(L10n.t("Ordre des flux (un critère par ligne)", "Stream order (one criterion per line)"))
             .setMessage(
                 L10n.t(
@@ -3001,15 +3000,19 @@ class FrUnified : Source() {
             ".json"
         // Partage en VRAI fichier : la feuille de partage permet alors d'enregistrer
         // la sauvegarde où l'on veut (Fichiers → n'importe quel dossier, Drive, …).
+        // Le fichier est d'abord posé dans Téléchargements (visible ensuite au même endroit).
         val fileUri = runCatching {
-            val dir = File(context.filesDir, "backups").apply { mkdirs() }
-            val file = File(dir, name)
-            file.writeText(json, Charsets.UTF_8)
-            FileProvider.getUriForFile(
-                context,
-                "eu.kanade.tachiyomi.animeextension.fr.frunified.backup",
-                file,
-            )
+            val resolver = context.contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, name)
+                put(MediaStore.Downloads.MIME_TYPE, "application/json")
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: error("insert")
+            resolver.openOutputStream(uri)?.use { it.write(json.toByteArray(Charsets.UTF_8)) }
+                ?: error("write")
+            uri
         }.getOrNull()
         val send = if (fileUri != null) {
             Intent(Intent.ACTION_SEND).apply {
@@ -3100,8 +3103,8 @@ class FrUnified : Source() {
                     )
                 } else {
                     L10n.t(
-                        "Choisir un fichier de sauvegarde… (${files.size} trouvé(s) dans tout le stockage)",
-                        "Choose a backup file… (${files.size} found across storage)",
+                        "Choisir un fichier de sauvegarde… (${files.size} trouvé(s))",
+                        "Choose a backup file… (${files.size} found)",
                     )
                 },
             )
@@ -3130,8 +3133,8 @@ class FrUnified : Source() {
                 0 -> if (files.isEmpty()) {
                     displayToast(
                         L10n.t(
-                            "Aucun fichier de sauvegarde trouvé dans le stockage",
-                            "No backup file found in storage",
+                            "Aucun fichier de sauvegarde trouvé dans le stockage partagé",
+                            "No backup file found in shared storage",
                         ),
                         Toast.LENGTH_LONG,
                     )
@@ -3150,24 +3153,24 @@ class FrUnified : Source() {
     private data class BackupFileEntry(val name: String, val uri: Uri)
 
     /**
-     * Fichiers JSON de sauvegarde FR Unifié PARTOUT dans le stockage partagé
-     * (Téléchargements, Documents, n'importe quel dossier visible) — best effort.
+     * Fichiers JSON de sauvegarde FR Unifié du stockage partagé (Téléchargements,
+     * Documents sur Android 8 et ancien) — best effort.
      */
     private fun listBackupFiles(dialogContext: Context): List<BackupFileEntry> = runCatching {
         val resolver = dialogContext.contentResolver
         if (Build.VERSION.SDK_INT >= 29) {
-            val projection = arrayOf(MediaStore.Files.DISPLAY_NAME, MediaStore.Files._ID)
+            val projection = arrayOf(MediaStore.Downloads.DISPLAY_NAME, MediaStore.Downloads._ID)
             val cursor = resolver.query(
-                MediaStore.Files.EXTERNAL_CONTENT_URI,
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
                 projection,
-                MediaStore.Files.DISPLAY_NAME + " LIKE ?",
+                MediaStore.Downloads.DISPLAY_NAME + " LIKE ?",
                 arrayOf("%.json"),
-                MediaStore.Files.DATE_MODIFIED + " DESC",
+                MediaStore.Downloads.DATE_ADDED + " DESC",
             )
             val entries = buildList {
                 cursor?.use { c ->
-                    val nameIndex = c.getColumnIndexOrThrow(MediaStore.Files.DISPLAY_NAME)
-                    val idIndex = c.getColumnIndexOrThrow(MediaStore.Files._ID)
+                    val nameIndex = c.getColumnIndexOrThrow(MediaStore.Downloads.DISPLAY_NAME)
+                    val idIndex = c.getColumnIndexOrThrow(MediaStore.Downloads._ID)
                     while (c.moveToNext()) {
                         val id = c.getLong(idIndex)
                         val fileName = c.getString(nameIndex) ?: continue
@@ -3175,7 +3178,7 @@ class FrUnified : Source() {
                         add(
                             BackupFileEntry(
                                 fileName,
-                                ContentUris.withAppendedId(MediaStore.Files.EXTERNAL_CONTENT_URI, id),
+                                ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id),
                             ),
                         )
                         if (size >= 30) break
