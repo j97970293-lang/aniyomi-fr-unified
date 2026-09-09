@@ -8,7 +8,6 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
-import android.content.res.TypedValue
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -2033,11 +2032,7 @@ class FrUnified : Source() {
      */
     private class ListPicker(private val dialogContext: Context) {
         private val density = dialogContext.resources.displayMetrics.density
-        private val textColor: Int = run {
-            val tv = TypedValue()
-            dialogContext.theme.resolveAttribute(android.R.attr.textColorPrimary, tv, true)
-            tv.data
-        }
+        private val textColor: Int = TextView(dialogContext).textColor
         val listContainer: LinearLayout = LinearLayout(dialogContext).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(
@@ -2156,7 +2151,7 @@ class FrUnified : Source() {
                 if (rowAction != null && rowActionVisible?.invoke(index) == true) {
                     rowView.addView(
                         Button(dialogContext).apply {
-                            text = "⚙️"
+                            this.text = "⚙️"
                             contentDescription = fullLabels[index]
                             textSize = 14f
                             minWidth = 0
@@ -2737,12 +2732,8 @@ class FrUnified : Source() {
         }
     }
 
-    /** Couleur de texte principale du thème en cours (listes et dialogues). */
-    private fun Context.dialogTextColor(): Int = run {
-        val tv = TypedValue()
-        theme.resolveAttribute(android.R.attr.textColorPrimary, tv, true)
-        tv.data
-    }
+    /** Couleur de texte du thème en cours, lue sur un TextView par défaut (listes et dialogues). */
+    private fun Context.dialogTextColor(): Int = TextView(this).textColor
 
     private fun showNuvioOrderDialog(dialogContext: Context) {
         displayToast(L10n.t("Chargement des sources…", "Loading sources…"))
