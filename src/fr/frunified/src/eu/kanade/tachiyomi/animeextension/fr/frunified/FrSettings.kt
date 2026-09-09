@@ -6,7 +6,7 @@ import org.json.JSONObject
 /** Préférences partagées par les catalogues, Stremio et le moteur Nuvio. */
 object FrSettings {
     const val KEY_SETTINGS_VERSION = "fr_unified_settings_version"
-    const val SETTINGS_VERSION = 11
+    const val SETTINGS_VERSION = 12
 
     /** Langue de l'interface de l'extension (français par défaut, anglais en option). */
     const val KEY_UI_LANGUAGE = "ui_language"
@@ -37,6 +37,9 @@ object FrSettings {
     const val KEY_STREMIO_AUTO_UPDATE = "stremio_auto_update"
     const val KEY_STREMIO_LAST_UPDATE = "stremio_last_update"
 
+    /** Rang des addons Stremio (celui du haut est interrogé d'abord), flèches ↑↓ du sélecteur. */
+    const val KEY_STREMIO_ORDER = "stremio_order"
+
     const val KEY_USE_SUBS = "use_subtitles"
     const val KEY_SUB_LANGS = "subtitle_langs"
 
@@ -54,6 +57,17 @@ object FrSettings {
     const val KEY_NUVIO_SEARCH_MODE = "nuvio_search_mode"
     const val KEY_NUVIO_AUTO_UPDATE = "nuvio_auto_update"
     const val KEY_NUVIO_LAST_UPDATE = "nuvio_last_update"
+
+    /**
+     * Sources bloquées globalement après suppression d'un dépôt (16.17) : les ids
+     * des providers d'un dépôt supprimé y restent inscrits, de sorte que la même
+     * source ne ressuscite pas via un autre dépôt qui la fournit aussi.
+     */
+    const val KEY_NUVIO_BLOCKED = "nuvio_blocked"
+
+    /** Qualités exclues du résultat (chips façon NuviO : 1080p, 4K, HDR, CAM, TS…). */
+    const val KEY_NUVIO_QUALITY_EXCLUDES = "nuvio_quality_excludes"
+
     const val KEY_STREAM_ORDER = "stream_order"
     const val KEY_CUSTOM_QUALITIES = "custom_qualities"
 
@@ -319,6 +333,27 @@ object FrSettings {
     val stremioCatalogKey: String get() = string(KEY_STREMIO_CATALOG, "")
     val stremioCatalogCache: String get() = string(KEY_STREMIO_CATALOG_CACHE, "")
 
+    /**
+     * Rang des addons Stremio (16.17) : l'addon du haut est interrogé d'abord.
+     * Sert de repli l'ordre des URLs configurées ; les nouveaux addons s'ajoutent
+     * à la fin tant qu'ils n'ont pas été classés avec les flèches.
+     */
+    val stremioOrder: List<String>
+        get() {
+            val saved = string(KEY_STREMIO_ORDER, "")
+                .lineSequence().map(String::trim).filter(String::isNotBlank).toList()
+            if (saved.isEmpty()) return stremioUrls.distinct()
+            return saved + stremioUrls.distinct().filterNot { base ->
+                saved.any { it.equals(base, true) }
+            }
+        }
+
+    internal fun saveStremioOrder(values: List<String>) {
+        runCatching {
+            prefs?.edit()?.putString(KEY_STREMIO_ORDER, values.distinct().joinToString("\n"))?.apply()
+        }
+    }
+
     internal fun saveStremioCatalogCache(value: String) {
         runCatching { prefs?.edit()?.putString(KEY_STREMIO_CATALOG_CACHE, value)?.apply() }
     }
@@ -352,6 +387,22 @@ object FrSettings {
     val nuvioReposDisabled: Set<String>
         get() = string(KEY_NUVIO_REPOS_DISABLED, "")
             .lineSequence().map(String::trim).filter(String::isNotBlank).toSet()
+
+    /**
+     * Ids de providers bloqués après suppression d'un dépôt (16.17) : un dépôt
+     * supprimé « vraiment » ne fournit plus aucune source, même si un autre dépôt
+     * déclare un provider portant le même id. Réajouter l'URL du dépôt lève le
+     * blocage de ses providers ; « Restaurer » dans le sélecteur lève tout blocage.
+     */
+    val nuvioBlocked: Set<String>
+        get() = string(KEY_NUVIO_BLOCKED, "")
+            .lineSequence().map { it.trim().lowercase() }.filter(String::isNotBlank).toSet()
+
+    internal fun saveNuvioBlocked(values: Set<String>) {
+        runCatching {
+            prefs?.edit()?.putString(KEY_NUVIO_BLOCKED, values.map { it.lowercase() }.distinct().joinToString("\n"))?.apply()
+        }
+    }
     val nuvioEnabled: Set<String>
         get() = string(KEY_NUVIO_ENABLED, DEFAULT_NUVIO_ENABLED)
             .lineSequence().map(String::trim).filter(String::isNotBlank).toSet()
@@ -368,11 +419,51 @@ object FrSettings {
      */
     val nuvioMaxPerScraper: Int
         get() = string(KEY_NUVIO_MAX, "0").toIntOrNull()?.coerceIn(0, 200) ?: 0
+
+    /**
+     * Qualités/marques exclues du résultat (chips façon NuviO, 16.17). Chaque jeton
+     * est soit une qualité (`4K`, `1080P`, `720P`…), soit une marque (`HDR`, `DV`,
+     * `REMUX`, `CAM`, `TS`). Vide = « Auto » (rien n'est exclu).
+     */
+    val nuvioQualityExcludes: Set<String>
+        get() = string(KEY_NUVIO_QUALITY_EXCLUDES, "")
+            .lineSequence().map { it.trim().uppercase() }.filter(String::isNotBlank).toSet()
+
+    internal fun saveNuvioQualityExcludes(values: Set<String>) {
+        runCatching {
+            prefs?.edit()?.putString(KEY_NUVIO_QUALITY_EXCLUDES, values.map { it.uppercase() }.distinct().joinToString("\n"))?.apply()
+        }
+    }
+
+    /** Vrai si le titre de flux correspond à l'une des qualités/marques exclues. */
+    fun isQualityExcluded(title: String): Boolean {
+        val excludes = nuvioQualityExcludes
+        if (excludes.isEmpty()) return false
+        val upper = title.uppercase()
+        return excludes.any { token ->
+            StreamLabel.qualityValue(token)?.let { value ->
+                StreamLabel.qualityOf(title) == value
+            } == true ||
+                when (token) {
+                    "HDR" -> Regex("\\bHDR\\b").containsMatchIn(upper)
+                    "DV" -> Regex("\\bDV\\b").containsMatchIn(upper) || upper.contains("DOLBY VISION")
+                    "REMUX" -> Regex("\\bREMUX\\b").containsMatchIn(upper)
+                    "CAM" -> Regex("\\bCAM\\b").containsMatchIn(upper)
+                    "TS" -> Regex("\\bTS\\b").containsMatchIn(upper)
+                    else -> false
+                }
+        }
+    }
     val nuvioOrder: List<String>
         get() = string(KEY_NUVIO_ORDER, RECOMMENDED_NUVIO_IDS.joinToString("\n"))
             .lineSequence().map(String::trim).filter(String::isNotBlank).toList()
+    /**
+     * Sites interrogés en même temps (16.17 : 3 → 6 par défaut) : plus de
+     * parallélisme = les résultats des sites lents arrivent plus tôt, et
+     * l'écran de serveurs se remplit plus vite.
+     */
     val nuvioConcurrency: Int
-        get() = string(KEY_NUVIO_CONCURRENCY, "3").toIntOrNull()?.coerceIn(2, 6) ?: 3
+        get() = string(KEY_NUVIO_CONCURRENCY, "6").toIntOrNull()?.coerceIn(2, 8) ?: 6
 
     /** Valeurs d'environnement saisies par l'utilisateur pour une source Nuvio. */
     fun sourceEnvValues(scraperId: String): Map<String, String> {

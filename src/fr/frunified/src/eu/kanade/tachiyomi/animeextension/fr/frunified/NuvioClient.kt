@@ -44,8 +44,13 @@ object NuvioClient {
 
     private const val SCRIPT_TTL_MS = 12 * 60 * 60 * 1000L // 12 h
     private const val MANIFEST_TTL_MS = 6 * 60 * 60 * 1000L // 6 h
-    private const val SCRAPER_TIMEOUT_MS = 40_000L
-    private const val NUVIO_CONCURRENCY = 3
+    /**
+     * Durée de vie maximale d'UN scrapeur (16.17 : 40 s → 25 s). Un site mort
+     * n'occupe plus son slot de parallélisme trop longtemps : les sites lents ou
+     * muets laissent la place, et les résultats des sites rapides arrivent avant.
+     */
+    private const val SCRAPER_TIMEOUT_MS = 25_000L
+    private const val NUVIO_CONCURRENCY = 6
 
     private const val NETWORK_TIMEOUT_MS = 10_000
     private const val PROBE_TIMEOUT_MS = 5_000
@@ -138,6 +143,16 @@ object NuvioClient {
     }
 
     /**
+     * Providers déclarés par UN dépôt, sans filtre de blocage (16.17) : sert à
+     * lever le blocage des sources d'un dépôt réajouté.
+     */
+    suspend fun scrapersForRepo(repo: String): List<NuvioScraper> =
+        withTimeoutOrNull(20_000L) { manifest(repo) }.orEmpty()
+            .associateBy { it.id.lowercase() }
+            .values
+            .toList()
+
+    /**
      * Libellé du dépôt d'origine d'une source, comme dans l'application NuviO :
      * « D3adlyRocket/Anime-Nuvio » pour un dépôt GitHub, « serveur.com/nuvio » sinon.
      * L'utilisateur doit toujours savoir de quel dépôt vient chaque site (dépôt
@@ -163,6 +178,9 @@ object NuvioClient {
         values: List<NuvioScraper>,
         includeDisabled: Boolean,
     ): List<NuvioScraper> = values
+        // Suppression « vraiment » (16.17) : les providers d'un dépôt supprimé
+        // restent bloqués même si un autre dépôt déclare le même id.
+        .filterNot { FrSettings.nuvioBlocked.contains(it.id.lowercase()) }
         .filter { includeDisabled || FrSettings.isNuvioEnabled(it.id) }
         .filter { includeDisabled || it.manifestEnabled }
         .filter {
@@ -611,8 +629,17 @@ object NuvioClient {
         return Regex("(?:return|case|throw|else|do|typeof|delete|void|yield)\\s*$").containsMatchIn(before)
     }
 
-    /** Exécute tous les scrapeurs activés en parallèle (bornés par le sémaphore de concurrence). */
-    suspend fun streams(payload: PlayPayload, callback: (Video) -> Unit): Boolean {
+    /**
+     * Exécute tous les scrapeurs activés en parallèle (bornés par le sémaphore de
+     * concurrence). [onScraperSettled] est appelé à la FIN de chaque scrapeur (avec
+     * ou sans résultat) : c'est ce qui permet à l'écran de serveurs d'afficher les
+     * résultats au fur et à mesure au lieu d'attendre le plus lent.
+     */
+    suspend fun streams(
+        payload: PlayPayload,
+        callback: (Video) -> Unit,
+        onScraperSettled: (() -> Unit)? = null,
+    ): Boolean {
         if (!FrSettings.useNuvio) return false
         lastResults.clear()
         val limiter = syncSemaphore()
@@ -634,6 +661,7 @@ object NuvioClient {
             absoluteTarget,
             payload,
             callback,
+            onScraperSettled,
         )
     }
 
@@ -659,25 +687,29 @@ object NuvioClient {
         absoluteTarget: Pair<Int, Int>,
         payload: PlayPayload,
         callback: (Video) -> Unit,
+        onScraperSettled: (() -> Unit)? = null,
     ): Boolean = coroutineScope {
         val results = scrapers.map { scraper ->
             async {
-                limiter.withPermit {
+                val ok = limiter.withPermit {
                     val isAnimeScraper = scraper.id in ANIME_FOCUSED_IDS
                     val (pS, pE) = if (isAnimeScraper) absoluteTarget else tmdbTarget
                     val (fS, fE) = if (isAnimeScraper) tmdbTarget else absoluteTarget
 
-                    var ok = trySuspend {
+                    var succeeded = trySuspend {
                         runScraper(scraper, tmdbId, mediaType, pS, pE, payload, callback)
                     }.getOrDefault(false)
 
-                    if (!ok && (pS to pE) != (fS to fE)) {
-                        ok = trySuspend {
+                    if (!succeeded && (pS to pE) != (fS to fE)) {
+                        succeeded = trySuspend {
                             runScraper(scraper, tmdbId, mediaType, fS, fE, payload, callback)
                         }.getOrDefault(false)
                     }
-                    ok
+                    succeeded
                 }
+                // Un slot de parallélisme est libéré : signale que ce site a fini.
+                onScraperSettled?.invoke()
+                ok
             }
         }.awaitAll()
         results.any { it }

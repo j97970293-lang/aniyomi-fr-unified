@@ -21,10 +21,12 @@ import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.preference.EditTextPreference
@@ -47,6 +49,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
@@ -55,6 +58,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Port Aniyomi de FR Unifié.
@@ -257,6 +263,93 @@ class FrUnified : Source() {
     private companion object {
         /** Durée maximale de chaque catalogue en « recherche rapide ». */
         const val QUICK_SEARCH_TIMEOUT_MS = 6_000L
+
+        /**
+         * Serveurs Nuvio (16.17) : la recherche de serveurs ne bloque plus l'écran
+         * le temps du site le plus lent. Premier affichage : on attend au plus
+         * [NUVIO_FIRST_LISTING_MS] pour montrer les serveurs rapides ; la recherche
+         * CONTINUE en arrière-plan et chaque nouvel affichage de l'écran de serveurs
+         * (réouverture, épisode suivant) montre ce qui s'est ajouté, sans rien
+         * relancer.
+         */
+        const val NUVIO_FIRST_LISTING_MS = 45_000L
+        const val NUVIO_REOPEN_WAIT_MS = 15_000L
+        const val NUVIO_SEARCH_TTL_MS = 10 * 60 * 1000L
+
+        /** Chips du filtre de qualité façon NuviO (un appui = exclusion). */
+        val QUALITY_FILTER_TAGS = listOf("4K", "1080p", "720p", "480p", "360p", "HDR", "DV", "REMUX", "CAM", "TS")
+    }
+
+    /**
+     * Recherche de serveurs Nuvio en cours pour un épisode (16.17). Les liens
+     * s'accumulent en arrière-plan ; [settledCount] compte les sites FINIS (avec ou
+     * sans résultat) afin de ne pas attendre les plus lents pour afficher.
+     */
+    private class ProgressiveNuvioSearch(
+        val payload: PlayPayload,
+        val startedAt: Long,
+    ) {
+        private val videos = CopyOnWriteArrayList<Video>()
+        private val settled = AtomicInteger(0)
+
+        @Volatile
+        var done = false
+            private set
+
+        fun add(video: Video) {
+            videos.add(video)
+        }
+
+        fun scraperSettled() {
+            settled.incrementAndGet()
+        }
+
+        fun markDone() {
+            done = true
+        }
+
+        val settledCount: Int
+            get() = settled.get()
+
+        fun snapshot(): List<Video> = videos.toList()
+    }
+
+    /** Recherches en cours, par épisode (clé = url de l'épisode) : une seule par épisode. */
+    private val progressiveSearches = ConcurrentHashMap<String, ProgressiveNuvioSearch>()
+
+    /**
+     * Recherche Nuvio progressive : créée au premier appel puis réutilisée pendant
+     * [NUVIO_SEARCH_TTL_MS] — la recherche continue en arrière-plan entre deux
+     * affichages de l'écran de serveurs, comme dans NuviO.
+     */
+    private fun activeProgressiveSearch(payload: PlayPayload, key: String): ProgressiveNuvioSearch {
+        val now = System.currentTimeMillis()
+        progressiveSearches.values.removeIf { now - it.startedAt > NUVIO_SEARCH_TTL_MS }
+        return synchronized(progressiveSearches) {
+            progressiveSearches.getOrPut(key) {
+                val search = ProgressiveNuvioSearch(payload, now)
+                settingsScope.launch {
+                    try {
+                        NuvioClient.streams(payload, search::add, search::scraperSettled)
+                    } finally {
+                        search.markDone()
+                    }
+                }
+                search
+            }
+        }
+    }
+
+    /** Attente bornée : montre les serveurs rapides d'abord, sans rien relancer. */
+    private suspend fun ProgressiveNuvioSearch.waitFirstWave(): List<Video> {
+        if (done) return snapshot()
+        val deadline = System.currentTimeMillis() +
+            if (System.currentTimeMillis() - startedAt < 5_000L) NUVIO_FIRST_LISTING_MS else NUVIO_REOPEN_WAIT_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (done || (settledCount >= 2 && snapshot().isNotEmpty())) break
+            delay(500)
+        }
+        return snapshot()
     }
 
     init {
@@ -1257,22 +1350,19 @@ class FrUnified : Source() {
     override suspend fun getHosterList(episode: SEpisode): List<Hoster> = coroutineScope {
         val payload = PlayPayload.parse(episode.url) ?: return@coroutineScope emptyList()
 
-        // Nuvio et les manifests Stremio sont découverts en parallèle. Les hosters
-        // Stremio sont volontairement paresseux : le flux n'est demandé qu'au clic,
-        // ce qui les rend visibles même lorsque Nuvio est complètement désactivé.
-        val nuvioJob = async {
-            if (!FrSettings.useNuvio) {
-                emptyList()
-            } else {
-                val found = java.util.concurrent.CopyOnWriteArrayList<Video>()
-                trySuspend { NuvioClient.streams(payload) { found += it } }
-                found.toList()
-            }
-        }
+        // Les deux moteurs partent EN MÊME TEMPS (comme dans NuviO) : les hosters
+        // Stremio (paresseux : le flux n'est demandé qu'au clic) et la recherche
+        // Nuvio PROGRESSIVE — les serveurs rapides sont affichés d'abord, la
+        // recherche continue en arrière-plan et chaque nouvel affichage de
+        // l'écran de serveurs montre les résultats qui ont suivi.
         val stremioJob = async {
             trySuspend { StremioClient.hosters(payload) }.getOrDefault(emptyList())
         }
-        val nuvioVideos = nuvioJob.await()
+        val nuvioVideos = if (FrSettings.useNuvio) {
+            activeProgressiveSearch(payload, episode.url).waitFirstWave()
+        } else {
+            emptyList()
+        }
         val stremioHosters = stremioJob.await()
         val tracks = if (nuvioVideos.isEmpty()) {
             emptyList()
@@ -1297,6 +1387,9 @@ class FrUnified : Source() {
         engineName: String,
     ): List<Hoster> {
         val prepared = videos
+            // Filtre de qualité façon NuviO (16.17) : les qualités/marques exclues
+            // (4K, 1080p, HDR, CAM, TS…) ne sont pas proposées.
+            .filterNot { FrSettings.isQualityExcluded(it.videoTitle) }
             .distinctBy { "${it.videoUrl}|${it.videoTitle}" }
             .map { video ->
                 if (tracks.isEmpty()) {
@@ -1484,8 +1577,10 @@ class FrUnified : Source() {
             "action_nuvio_sources",
             L10n.t("Choisir les sources", "Choose the sources"),
             L10n.t(
-                "Drapeau = langue, dépôt affiché comme dans NuviO. Appuyez longuement pour supprimer un dépôt.",
-                "Flag = language, repo shown like in NuviO. Long-press to remove a repository.",
+                "Façon NuviO : onglets par dépôt, recherche, filtre de qualité, classement ↑↓ " +
+                    "(le haut part d'abord), test 🧪, suppression du dépôt 🗑 ou appui long.",
+                "NuviO-style: per-repo tabs, search, quality filter, ↑↓ ranking (top is tried " +
+                    "first), 🧪 test, 🗑 repository removal or long-press.",
             ),
         ) { showNuvioPicker(context) }
         action(
@@ -1500,8 +1595,10 @@ class FrUnified : Source() {
             "action_nuvio_remove_repo",
             L10n.t("Supprimer un dépôt Nuvio", "Remove a Nuvio repository"),
             L10n.t(
-                "Supprime un dépôt entier : toutes ses sources disparaissent d'un seul geste.",
-                "Removes a whole repository: all of its sources go at once.",
+                "Supprime un dépôt entier : ses sources sont retirées ET bloquées, " +
+                    "elles ne reviennent pas via un autre dépôt. Réajouter l'URL le restaure.",
+                "Removes a whole repository: its sources are deleted AND blocked, they will not " +
+                    "come back via another repository. Add the URL back to restore it.",
             ),
         ) { showNuvioRepoDeleteDialog(context) }
         action(
@@ -1543,8 +1640,10 @@ class FrUnified : Source() {
             "action_stremio_sources",
             L10n.t("Choisir les addons", "Choose the addons"),
             L10n.t(
-                "Addons de catalogue, de métadonnées, de flux et de sous-titres. Appuyez longuement pour supprimer.",
-                "Catalog, metadata, stream and subtitle addons. Long-press to remove.",
+                "Façon NuviO : interrupteur par addon, classement ↑↓ (le haut part d'abord), " +
+                    "catalogues exposés, suppression 🗑 ou appui long.",
+                "NuviO-style: per-addon toggle, ↑↓ ranking (top is tried first), exposed catalogs, " +
+                    "🗑 removal or long-press.",
             ),
         ) { showStremioPicker(context) }
         action(
@@ -1672,16 +1771,21 @@ class FrUnified : Source() {
             appendLine(L10n.t("📺 3 · SOURCES NUVIO", "📺 3 · NUVIO SOURCES"))
             appendLine(
                 L10n.t(
-                    "Choisissez les sites activés (drapeau = langue, dépôt affiché comme dans NuviO) : le " +
-                        "bouton « Tout activer » active tous les sites, et leur ordre (texte) dans « Options de " +
-                        "recherche des sources » décide de la première source essayée — tous les sites activés " +
-                        "sont interrogés, comme dans NuviO. « Supprimer un dépôt Nuvio » retire un dépôt entier " +
-                        "avec toutes ses sources. « Options de recherche » : parallélisme, flux maximum par site " +
-                        "(illimité par défaut), vérification anti-popups, mise à jour automatique (une fois par jour).",
-                    "Choose the active sites (flag = language, repo shown like in NuviO): the button " +
-                        "« Enable all » activates every site, and their text order in « Source search options » " +
-                        "decides which one is tried first — all active sites are queried, like in NuviO. " +
-                        "« Remove a Nuvio repository » deletes a repo with all of its sources. « Source search " +
+                    "« Choisir les sources » reprend l'écran NuviO : aperçu, onglets par dépôt, recherche, " +
+                        "chips de qualité (un appui = exclusion), et une carte par site : interrupteur, " +
+                        "classement ↑↓ (celui du haut part d'abord), configuration ⚙️, test 🧪, et dépôt " +
+                        "(↻ actualiser, 🗑 supprimer — les sources supprimées sont bloquées et se restaurent " +
+                        "en réajoutant l'URL du dépôt). « Tout activer » part sur TOUS les sites, comme dans " +
+                        "NuviO, et en lecture les serveurs s'affichent progressivement : les sites rapides " +
+                        "d'abord, les lents s'ajoutent ensuite. « Options de recherche » : parallélisme, flux " +
+                        "maximum par site (illimité par défaut), vérification anti-popups, mise à jour " +
+                        "automatique (une fois par jour).",
+                    "« Choose the sources » mirrors the NuviO screen: overview, per-repo tabs, search, " +
+                        "quality chips (one tap = exclusion), and one card per site: toggle, ↑↓ ranking " +
+                        "(top is tried first), ⚙️ configuration, 🧪 test, and repository (↻ refresh, 🗑 remove " +
+                        "— removed sources are blocked and restored by adding the repository URL back). " +
+                        "« Enable all » queries EVERY site, like NuviO, and in playback servers appear " +
+                        "progressively: fast sites first, slow ones are added afterwards. « Source search " +
                         "options »: concurrency, max streams per site (unlimited by default), anti-popup " +
                         "verification, automatic updates (once a day).",
                 ),
@@ -1691,9 +1795,11 @@ class FrUnified : Source() {
             appendLine(
                 L10n.t(
                     "Les addons fournissent catalogues et serveurs. Le chargement se fait au clic ; " +
-                        "un addon lent ne bloque plus les autres. Appuyez longuement pour supprimer un addon.",
+                        "un addon lent ne bloque plus les autres. ↑↓ classe les addons (celui du haut part " +
+                        "d'abord) ; 🗑 ou appui long supprime un addon vraiment (il ne ressuscite plus).",
                     "Addons provide catalogs and servers. Loading happens on click; a slow addon no longer " +
-                        "blocks the others. Long-press to remove an addon.",
+                        "blocks the others. ↑↓ ranks the addons (top is tried first); 🗑 or long-press removes " +
+                        "an addon for good (it will not come back).",
                 ),
             )
             appendLine()
@@ -1752,11 +1858,7 @@ class FrUnified : Source() {
         container.addView(picker.listContainer)
         val dialog = AlertDialog.Builder(dialogContext)
             .setTitle(L10n.t("Choisir le DNS", "Choose the DNS"))
-            .setView(
-                ScrollView(dialogContext).apply {
-                    addView(container)
-                },
-            )
+            .setView(cappedScroll(dialogContext, container))
             .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
             .create()
         picker.onSingle = { index ->
@@ -1887,12 +1989,6 @@ class FrUnified : Source() {
         }
     }
 
-    private data class SourceChoice(
-        val label: String,
-        val value: String,
-        val enabled: Boolean,
-    )
-
     private fun showCatalogLanguagePicker(dialogContext: Context) {
         val values = FrSettings.CATALOG_LANGUAGE_LABELS.keys.toList()
         val labels = FrSettings.CATALOG_LANGUAGE_LABELS.map { (code, label) ->
@@ -1915,11 +2011,7 @@ class FrUnified : Source() {
                     "The first checked language is the primary one (TMDB entries).",
                 ),
             )
-            .setView(
-                ScrollView(dialogContext).apply {
-                    addView(container)
-                },
-            )
+            .setView(cappedScroll(dialogContext, container))
             .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
             .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
                 val selected = values.indices.filter { picker.isChecked(it) }.map { values[it] }
@@ -1966,11 +2058,7 @@ class FrUnified : Source() {
         container.addView(picker.listContainer)
         val dialog = AlertDialog.Builder(dialogContext)
             .setTitle(L10n.t("Catalogues", "Catalogs"))
-            .setView(
-                ScrollView(dialogContext).apply {
-                    addView(container)
-                },
-            )
+            .setView(cappedScroll(dialogContext, container))
             .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
             .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
                 preferences.edit()
@@ -2228,6 +2316,19 @@ class FrUnified : Source() {
     }
 
     /**
+     * Défilement borné des dialogues de réglages (16.17) : la zone défilable ne
+     * dépasse pas ~58 % de la hauteur d'écran, ce qui GARDE LE BOUTON
+     * « Enregistrer » à l'écran — avant, les listes longues (langues des catalogues,
+     * sélection des sources, configuration des sources) poussaient le bouton hors
+     * de l'écran et on ne pouvait pas enregistrer.
+     */
+    private fun cappedScroll(dialogContext: Context, inner: View): ScrollView =
+        ScrollView(dialogContext).apply {
+            addView(inner)
+            maximumHeight = (dialogContext.resources.displayMetrics.heightPixels * 0.58f).toInt()
+        }
+
+    /**
      * Popup « Options de recherche des sources » : regroupement des réglages
      * difficiles (parallélisme, flux maximum par site, vérification anti-popups,
      * mise à jour automatique) dans une seule fenêtre, comme dans Cloudstream.
@@ -2245,9 +2346,10 @@ class FrUnified : Source() {
             L10n.t("Sites interrogés en même temps", "Sites queried at the same time"),
             listOf(
                 "2" to L10n.t("2 — prudent", "2 — cautious"),
-                "3" to L10n.t("3 — recommandé", "3 — recommended"),
+                "3" to L10n.t("3 — sobre", "3 — conservative"),
                 "4" to L10n.t("4 — rapide", "4 — fast"),
-                "6" to L10n.t("6 — parallèle", "6 — parallel"),
+                "6" to L10n.t("6 — recommandé", "6 — recommended"),
+                "8" to L10n.t("8 — maximum", "8 — maximum"),
             ),
             FrSettings.nuvioConcurrency.toString(),
         )
@@ -2311,11 +2413,7 @@ class FrUnified : Source() {
         container.addView(updateNow)
         AlertDialog.Builder(dialogContext)
             .setTitle(L10n.t("Options de recherche des sources", "Source search options"))
-            .setView(
-                ScrollView(dialogContext).apply {
-                    addView(container)
-                },
-            )
+            .setView(cappedScroll(dialogContext, container))
             .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
             .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
                 preferences.edit()
@@ -2413,11 +2511,7 @@ class FrUnified : Source() {
                             L10n.t("Configurer les sources", "Configure the sources")
                         },
                     )
-                    .setView(
-                        ScrollView(dialogContext).apply {
-                            addView(container)
-                        },
-                    )
+                    .setView(cappedScroll(dialogContext, container))
                     .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
                     .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
                         fields.forEach { (scraperId, perScraper) ->
@@ -2471,11 +2565,7 @@ class FrUnified : Source() {
         container.addView(updateNow)
         AlertDialog.Builder(dialogContext)
             .setTitle(L10n.t("Options Stremio", "Stremio options"))
-            .setView(
-                ScrollView(dialogContext).apply {
-                    addView(container)
-                },
-            )
+            .setView(cappedScroll(dialogContext, container))
             .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
             .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
                 preferences.edit()
@@ -2546,11 +2636,7 @@ class FrUnified : Source() {
         container.addView(cookies)
         AlertDialog.Builder(dialogContext)
             .setTitle(L10n.t("Paramètres avancés", "Advanced settings"))
-            .setView(
-                ScrollView(dialogContext).apply {
-                    addView(container)
-                },
-            )
+            .setView(cappedScroll(dialogContext, container))
             .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
             .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
                 preferences.edit()
@@ -2566,8 +2652,24 @@ class FrUnified : Source() {
     }
 
     /**
-     * Suppression d'un dépôt Nuvio entier (comme la suppression d'un addon Stremio) :
-     * le dépôt disparaît de la liste et toutes ses sources sont retirées des réglages.
+     * Supprime un dépôt Nuvio « vraiment » (16.17, comme pour un addon Stremio) :
+     * l'URL est retirée des réglages et TOUS ses providers sont bloqués globalement —
+     * une source ne renaît pas via un autre dépôt qui déclare le même id.
+     * Réajouter l'URL du dépôt lève le blocage de ses providers.
+     */
+    private fun deleteNuvioRepository(repo: String, scrapers: List<NuvioClient.NuvioScraper>) {
+        val blocked = (FrSettings.nuvioBlocked + scrapers.map { it.id.lowercase() }).distinct()
+        val remainingRepos = FrSettings.nuvioRepos.filter { it.trim() != repo.trim() }
+        preferences.edit()
+            .putString(FrSettings.KEY_NUVIO_REPOS, remainingRepos.joinToString("\n"))
+            .putString(FrSettings.KEY_NUVIO_BLOCKED, blocked.joinToString("\n"))
+            .apply()
+        NuvioClient.invalidateRepository(repo)
+    }
+
+    /**
+     * Suppression d'un dépôt Nuvio entier : le dépôt disparaît de la liste et toutes
+     * ses sources sont retirées (bloquées, même si un autre dépôt les fournit aussi).
      */
     private fun showNuvioRepoDeleteDialog(dialogContext: Context) {
         displayToast(L10n.t("Chargement des dépôts…", "Loading repositories…"))
@@ -2602,17 +2704,15 @@ class FrUnified : Source() {
                     .setTitle(L10n.t("Supprimer un dépôt Nuvio", "Remove a Nuvio repository"))
                     .setMessage(
                         L10n.t(
-                            "Choisissez le dépôt à supprimer : toutes ses sources seront retirées. " +
+                            "Choisissez le dépôt à supprimer : ses sources sont retirées ET bloquées, " +
+                                "elles ne reviennent pas via un autre dépôt. " +
                                 "Réajoutez l'URL du dépôt pour le restaurer.",
-                            "Choose the repository to remove: all of its sources will be deleted. " +
+                            "Choose the repository to remove: its sources are deleted AND blocked, " +
+                                "they will not come back via another repository. " +
                                 "Add the repository URL back to restore it.",
                         ),
                     )
-                    .setView(
-                        ScrollView(dialogContext).apply {
-                            addView(container)
-                        },
-                    )
+                    .setView(cappedScroll(dialogContext, container))
                     .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
                     .create()
                 picker.onSingle = { index ->
@@ -2622,26 +2722,15 @@ class FrUnified : Source() {
                         .setTitle(L10n.t("Supprimer le dépôt", "Remove the repository"))
                         .setMessage(
                             L10n.t(
-                                "Supprimer « ${NuvioClient.repoLabel(repo)} » et ses ${scrapers.size} source(s) ?",
-                                "Remove « ${NuvioClient.repoLabel(repo)} » and its ${scrapers.size} source(s)?",
+                                "Supprimer « ${NuvioClient.repoLabel(repo)} » et bloquer ses ${scrapers.size} source(s) ? " +
+                                    "Elles ne répondront plus, même fournies par un autre dépôt.",
+                                "Remove « ${NuvioClient.repoLabel(repo)} » and block its ${scrapers.size} source(s)? " +
+                                    "They will stop responding, even when provided by another repository.",
                             ),
                         )
                         .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
                         .setPositiveButton(L10n.t("Supprimer", "Remove")) { _, _ ->
-                            val ids = scrapers.map { it.id.lowercase() }.toSet()
-                            val remainingRepos = FrSettings.nuvioRepos.filter { it.trim() != repo.trim() }
-                            val remainingEnabled = FrSettings.nuvioEnabled.filterNot { value ->
-                                ids.any { id -> id.equals(value.removePrefix("!"), true) }
-                            }
-                            val remainingOrder = FrSettings.nuvioOrder.filterNot { ordered ->
-                                ids.any { id -> id.equals(ordered, true) }
-                            }
-                            preferences.edit()
-                                .putString(FrSettings.KEY_NUVIO_REPOS, remainingRepos.joinToString("\n"))
-                                .putString(FrSettings.KEY_NUVIO_ENABLED, remainingEnabled.joinToString("\n"))
-                                .putString(FrSettings.KEY_NUVIO_ORDER, remainingOrder.joinToString("\n"))
-                                .apply()
-                            NuvioClient.invalidateRepository(repo)
+                            deleteNuvioRepository(repo, scrapers)
                             displayToast(
                                 L10n.t(
                                     "Dépôt supprimé avec toutes ses sources",
@@ -2657,39 +2746,23 @@ class FrUnified : Source() {
         }
     }
 
+    /**
+     * Sélecteur « Choisir les sources » (16.17, façon application NuviO) :
+     * aperçu (dépôts / fournisseurs / actifs), onglets par dépôt, dépôts
+     * installés (actualiser ↻ / supprimer), filtre de qualité (chips), et
+     * une carte par fournisseur : interrupteur, classement (↑↓), configuration
+     * (⚙️), test (🧪) et suppression du dépôt (🗑).
+     */
     private fun showNuvioPicker(dialogContext: Context) {
         displayToast(L10n.t("Chargement des sources Nuvio…", "Loading Nuvio sources…"))
         settingsScope.launch {
-            val nuvioResult = trySuspend { NuvioClient.scrapers(includeDisabled = true) }
+            val result = trySuspend { NuvioClient.scrapers(includeDisabled = true) }
+            val all = result.getOrDefault(emptyList())
             val diagnostics = NuvioClient.diagnostics()
-            val all = nuvioResult.getOrDefault(emptyList())
-            val choices = all.map { scraper ->
-                // Le dépôt d'origine est toujours visible, comme dans l'application NuviO :
-                // un site français dans un dépôt international reste identifiable.
-                val origin = NuvioClient.repoLabel(scraper.repoBase)
-                val recommendation = if (scraper.id in FrSettings.RECOMMENDED_NUVIO_IDS) {
-                    L10n.t(" ★ conseillée", " ★ recommended")
-                } else {
-                    ""
-                }
-                val configMark = if (NuvioClient.missingRequiredEnv(scraper).isNotEmpty()) {
-                    L10n.t(" · ⚙️ à configurer", " · ⚙️ to configure")
-                } else {
-                    ""
-                }
-                val status = diagnostics[scraper.id]?.let { " · ${it.take(45)}" }.orEmpty()
-                val flag = FrSettings.flagForLanguages(scraper.contentLanguage)
-                SourceChoice(
-                    label = "$flag ${scraper.name}$recommendation · $origin$configMark$status",
-                    value = scraper.id,
-                    enabled = FrSettings.isNuvioEnabled(scraper.id),
-                )
-            }
-            val reposByScraper = all.associate { it.id.lowercase() to it.repoBase }
             handler.post {
-                if (choices.isEmpty()) {
+                if (all.isEmpty()) {
                     displayToast(
-                        nuvioResult.exceptionOrNull()?.message?.let {
+                        result.exceptionOrNull()?.message?.let {
                             L10n.t(
                                 "Nuvio indisponible : ${it.take(100)}",
                                 "Nuvio unavailable: ${it.take(100)}",
@@ -2702,165 +2775,555 @@ class FrUnified : Source() {
                     )
                     return@post
                 }
-                var wildcardMode = FrSettings.nuvioEnabled.any { it.equals("all", true) }
-                val density = dialogContext.resources.displayMetrics.density
-                val padding = (density * 12).toInt()
-                val container = LinearLayout(dialogContext).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(padding, padding, padding, padding)
-                }
-                // Zone de recherche en haut de liste : les sources se filtrent au
-                // clavier à mesure que l'on tape (utile avec centaine de sources).
-                val search = EditText(dialogContext).apply {
-                    hint = L10n.t("Rechercher une source…", "Search a source…")
-                    inputType = InputType.TYPE_CLASS_TEXT
-                    setPadding(0, 0, 0, (density * 8).toInt())
-                    layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                    )
-                }
-                val picker = ListPicker(dialogContext).build(
-                    choices.map(SourceChoice::label),
-                    multi = true,
-                    checked = BooleanArray(choices.size) { choices[it].enabled },
+                buildNuvioPicker(dialogContext, all, diagnostics)
+            }
+        }
+    }
+
+    /**
+     * Construit le sélecteur Nuvio façon NuviO. L'état (activations, classement,
+     * filtres) vit dans des variables de travail appliquées à « Enregistrer » ;
+     * le classement (↑↓) est appliqué immédiatement : le fournisseur du haut est
+     * celui qui est interrogé d'abord.
+     */
+    private fun buildNuvioPicker(
+        dialogContext: Context,
+        all: List<NuvioClient.NuvioScraper>,
+        diagnostics: Map<String, String>,
+    ) {
+        lateinit var dialog: AlertDialog
+        val density = dialogContext.resources.displayMetrics.density
+        val padding = (density * 12).toInt()
+
+        var wildcardMode = FrSettings.nuvioEnabled.any { it.equals("all", true) }
+        val workingEnabled = all.filter { FrSettings.isNuvioEnabled(it.id) }.map { it.id }.toMutableSet()
+        // Ordre complet des fournisseurs (celui du haut part d'abord) : les flèches
+        // ↑↓ réordonnent la liste ET l'enregistrent tout de suite.
+        var workingOrder = all.map { it.id }
+        var repoFilter: String? = null
+        var query = ""
+
+        val container = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
+
+        // ── Aperçu : N dépôts · M fournisseurs · K actifs (chips façon NuviO) ──
+        val stats = TextView(dialogContext).apply {
+            textSize = 13f
+            setPadding(0, 0, 0, (density * 8).toInt())
+        }
+        container.addView(stats)
+
+        fun refreshStats() {
+            stats.text = L10n.t(
+                "${FrSettings.nuvioRepos.size} dépôt(s) · ${all.size} fournisseur(s) · ${workingEnabled.size} actif(s)",
+                "${FrSettings.nuvioRepos.size} repo(s) · ${all.size} provider(s) · ${workingEnabled.size} active",
+            )
+        }
+
+        // ── Recherche : les sources se filtrent au clavier (centaine de sources) ──
+        val search = EditText(dialogContext).apply {
+            hint = L10n.t("Rechercher un fournisseur…", "Search a provider…")
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
+        container.addView(search)
+
+        fun matchesRepo(scraper: NuvioClient.NuvioScraper): Boolean =
+            repoFilter == null || scraper.repoBase == repoFilter
+
+        fun matchesQuery(scraper: NuvioClient.NuvioScraper): Boolean {
+            val q = query.trim().lowercase()
+            if (q.isEmpty()) return true
+            return scraper.name.lowercase().contains(q) ||
+                NuvioClient.repoLabel(scraper.repoBase).lowercase().contains(q)
+        }
+
+        // ── Classement : monter/descendre un fournisseur (celui du haut part d'abord) ──
+        fun moveInOrder(id: String, direction: Int) {
+            val index = workingOrder.indexOfFirst { it.equals(id, true) }
+            if (index < 0) return
+            val target = (index + direction).coerceIn(0, workingOrder.size - 1)
+            if (target == index) return
+            val swapped = workingOrder.toMutableList()
+            val tmp = swapped[index]
+            swapped[index] = swapped[target]
+            swapped[target] = tmp
+            workingOrder = swapped
+            // On conserve les entrées enregistrées qui ne sont plus chargées ici.
+            val merged = swapped + FrSettings.nuvioOrder.filterNot { saved ->
+                swapped.any { it.equals(saved, true) }
+            }
+            preferences.edit().putString(FrSettings.KEY_NUVIO_ORDER, merged.joinToString("\n")).apply()
+        }
+
+        // ── Suppression d'un dépôt « vraiment » (ses sources sont bloquées) ──
+        fun confirmRemoveRepo(scraper: NuvioClient.NuvioScraper) {
+            val repo = scraper.repoBase
+            val providers = all.filter { it.repoBase == repo }
+            AlertDialog.Builder(dialogContext)
+                .setTitle(L10n.t("Supprimer le dépôt", "Remove the repository"))
+                .setMessage(
+                    L10n.t(
+                        "Supprimer « ${NuvioClient.repoLabel(repo)} » et bloquer ses ${providers.size} source(s) ? " +
+                            "Elles ne répondront plus, même fournies par un autre dépôt.",
+                        "Remove « ${NuvioClient.repoLabel(repo)} » and block its ${providers.size} source(s)? " +
+                            "They will stop responding, even when provided by another repository.",
+                    ),
                 )
-                picker.onLongClick = { position ->
-                    val repo = reposByScraper[choices[position].value.lowercase()]
-                    if (repo.isNullOrBlank()) {
-                        false
-                    } else {
-                        val removedCount = choices.count { choice ->
-                            reposByScraper[choice.value.lowercase()] == repo
-                        }
-                        AlertDialog.Builder(dialogContext)
-                            .setTitle(L10n.t("Supprimer le dépôt", "Remove the repository"))
-                            .setMessage(
-                                L10n.t(
-                                    "Supprimer « ${NuvioClient.repoLabel(repo)} » ($removedCount source(s)) ? " +
-                                        "Ajoutez-le à nouveau avec « Ajouter un dépôt Nuvio » pour le restaurer.",
-                                    "Remove « ${NuvioClient.repoLabel(repo)} » ($removedCount source(s))? " +
-                                        "Add it back with « Add a Nuvio repository » to restore it.",
-                                ),
-                            )
-                            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
-                            .setPositiveButton(L10n.t("Supprimer", "Remove")) { _, _ ->
-                                val remaining = FrSettings.nuvioRepos.filter { it != repo }
-                                preferences.edit()
-                                    .putString(FrSettings.KEY_NUVIO_REPOS, remaining.joinToString("\n"))
-                                    .apply()
-                                NuvioClient.invalidateRepository(repo)
-                                displayToast(
-                                    L10n.t("Dépôt supprimé", "Repository removed"),
-                                    Toast.LENGTH_LONG,
-                                )
-                            }
-                            .show()
-                        true
-                    }
+                .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+                .setPositiveButton(L10n.t("Supprimer", "Remove")) { _, _ ->
+                    deleteNuvioRepository(repo, providers)
+                    dialog.dismiss()
+                    showNuvioPicker(dialogContext)
                 }
-                // Configuration des variables d'environnement directement depuis
-                // la source (bouton ⚙️), sans quitter le sélecteur.
-                picker.rowAction = { position -> showSourceConfigPopup(dialogContext, choices[position].value) }
-                picker.rowActionVisible = { position ->
-                    val scraper = all.firstOrNull { it.id.equals(choices[position].value, true) }
-                    scraper != null && (scraper.envDefaults.isNotEmpty() || scraper.requiredEnv.isNotEmpty())
+                .show()
+        }
+
+        // ── Une carte fournisseur : interrupteur + dépôt/types + statut + actions ──
+        fun buildProviderCard(scraper: NuvioClient.NuvioScraper): View {
+            val card = LinearLayout(dialogContext).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, (density * 6).toInt(), 0, (density * 6).toInt())
+                isClickable = true
+                isFocusable = true
+            }
+            val top = LinearLayout(dialogContext).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val flag = FrSettings.flagForLanguages(scraper.contentLanguage)
+            val configMark = if (NuvioClient.missingRequiredEnv(scraper).isNotEmpty()) {
+                L10n.t(" · ⚙️ à configurer", " · ⚙️ to configure")
+            } else {
+                ""
+            }
+            top.addView(
+                TextView(dialogContext).apply {
+                    text = "$flag ${scraper.name}$configMark"
+                    textSize = 14f
+                    maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
+                    layoutParams = LinearLayout.LayoutParams(
+                        0,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        1f,
+                    )
+                },
+            )
+            top.addView(
+                Switch(dialogContext).apply {
+                    isChecked = workingEnabled.any { it.equals(scraper.id, true) }
+                    isClickable = false
+                    isFocusable = false
+                },
+            )
+            card.addView(top)
+            card.addView(
+                TextView(dialogContext).apply {
+                    val types = scraper.supportedTypes.joinToString(" | ").ifBlank { "movie | tv" }
+                    text = "${NuvioClient.repoLabel(scraper.repoBase)} · $types"
+                    textSize = 12f
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                },
+            )
+            diagnostics[scraper.id]?.let { status ->
+                card.addView(
+                    TextView(dialogContext).apply {
+                        text = status
+                        textSize = 12f
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                    },
+                )
+            }
+            val actions = LinearLayout(dialogContext).apply { orientation = LinearLayout.HORIZONTAL }
+            fun actionButton(symbol: String, description: String, action: () -> Unit) {
+                actions.addView(
+                    Button(dialogContext).apply {
+                        text = symbol
+                        contentDescription = description
+                        minWidth = 0
+                        minHeight = 0
+                        background = null
+                        setPadding((density * 6).toInt(), 0, (density * 6).toInt(), 0)
+                        setOnClickListener { action() }
+                    },
+                )
+            }
+            actionButton("↑", L10n.t("Monter dans le classement", "Move up in the ranking")) {
+                moveInOrder(scraper.id, -1)
+                refreshProviders()
+                refreshRepoTabs()
+            }
+            actionButton("↓", L10n.t("Descendre dans le classement", "Move down in the ranking")) {
+                moveInOrder(scraper.id, 1)
+                refreshProviders()
+                refreshRepoTabs()
+            }
+            if (scraper.envDefaults.isNotEmpty() || scraper.requiredEnv.isNotEmpty()) {
+                actionButton("⚙️", L10n.t("Configurer la source", "Configure the source")) {
+                    showSourceConfigPopup(dialogContext, scraper.id)
                 }
-                search.addTextChangedListener(object : TextWatcher {
-                    override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) {}
-                    override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) {}
-                    override fun afterTextChanged(text: Editable?) {
-                        picker.filter(text?.toString().orEmpty())
-                    }
-                })
-                container.addView(picker.listContainer)
-                val activeCount = choices.count { it.enabled }
-                val dialog = AlertDialog.Builder(dialogContext)
-                    .setTitle(
-                        L10n.t(
-                            "Nuvio ($activeCount/${choices.size} actives)",
-                            "Nuvio ($activeCount/${choices.size} active)",
-                        ),
-                    )
-                    .setMessage(
-                        L10n.t(
-                            "Recherchez une source ; appuyez longuement pour supprimer son dépôt.",
-                            "Search a source; long-press to remove its repository.",
-                        ),
-                    )
-                    .setView(
-                        LinearLayout(dialogContext).apply {
-                            orientation = LinearLayout.VERTICAL
-                            setPadding(padding, padding, 0, 0)
-                            addView(search)
-                            addView(
-                                ScrollView(dialogContext).apply {
-                                    addView(container)
-                                },
-                            )
-                        },
-                    )
-                    .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
-                    .setNeutralButton(L10n.t("Tout activer", "Enable all"), null)
-                    .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
-                        val visible = choices.map { it.value.lowercase() }.toSet()
-                        val enabled = if (wildcardMode) {
-                            val oldHiddenExclusions = FrSettings.nuvioEnabled
-                                .filter { it.startsWith('!') && it.removePrefix("!").lowercase() !in visible }
-                            listOf("all") +
-                                oldHiddenExclusions +
-                                choices.indices.filter { !picker.isChecked(it) }.map { "!${choices[it].value}" }
-                        } else {
-                            val oldHiddenExplicit = FrSettings.nuvioEnabled.filter { value ->
-                                value != "all" && !value.startsWith('!') && value.lowercase() !in visible
-                            }
-                            oldHiddenExplicit +
-                                choices.indices.filter { picker.isChecked(it) }.map { choices[it].value }
-                        }
-                        val checkedIds = choices.indices.filter { picker.isChecked(it) }.map { choices[it].value }
-                        val selectedOrder = FrSettings.nuvioOrder.mapNotNull { ordered ->
-                            checkedIds.firstOrNull { it.equals(ordered, true) }
-                        } +
-                            checkedIds
-                        preferences.edit()
-                            .putString(
-                                FrSettings.KEY_NUVIO_ENABLED,
-                                enabled.distinctBy(String::lowercase).joinToString("\n"),
-                            )
-                            .putString(
-                                FrSettings.KEY_NUVIO_ORDER,
-                                (selectedOrder + FrSettings.nuvioOrder)
-                                    .distinctBy(String::lowercase)
-                                    .joinToString("\n"),
-                            )
-                            .apply()
+            }
+            actionButton("🧪", L10n.t("Tester le fournisseur", "Test the provider")) {
+                displayToast(L10n.t("Test de « ${scraper.name} »…", "Testing « ${scraper.name} »…"))
+                settingsScope.launch {
+                    val outcome = trySuspend { NuvioClient.testProvider(scraper.id) }
+                    handler.post {
                         displayToast(
-                            L10n.t(
-                                "Nuvio : ${checkedIds.size} source(s) active(s)",
-                                "Nuvio: ${checkedIds.size} active source(s)",
-                            ),
-                        )
-                    }
-                    .create()
-                dialog.setOnShowListener {
-                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                        // « Tout activer » : comme dans NuviO, tous les sites du dépôt partent.
-                        wildcardMode = true
-                        picker.setAll(true)
-                    }
-                }
-                runCatching { dialog.show() }
-                    .onFailure {
-                        displayToast(
-                            L10n.t(
-                                "Impossible d'ouvrir le sélecteur Nuvio",
-                                "Cannot open the Nuvio picker",
-                            ),
+                            outcome.getOrElse { it.message?.take(160) ?: L10n.t("Erreur", "Error") },
                             Toast.LENGTH_LONG,
                         )
                     }
+                }
+            }
+            actionButton("🗑", L10n.t("Supprimer le dépôt", "Remove the repository")) {
+                confirmRemoveRepo(scraper)
+            }
+            card.addView(actions)
+            card.setOnClickListener {
+                val present = workingEnabled.any { it.equals(scraper.id, true) }
+                if (present) {
+                    workingEnabled.removeAll { it.equals(scraper.id, true) }
+                } else {
+                    workingEnabled.add(scraper.id)
+                }
+                refreshStats()
+                refreshRepoTabs()
+                refreshProviders()
+            }
+            card.setOnLongClickListener {
+                confirmRemoveRepo(scraper)
+                true
+            }
+            return card
+        }
+
+        // ── Liste des fournisseurs (ordre du classement, filtres appliqués) ──
+        val providersSection = LinearLayout(dialogContext).apply { orientation = LinearLayout.VERTICAL }
+        container.addView(providersSection)
+
+        fun refreshProviders() {
+            providersSection.removeAllViews()
+            val visible = all
+                .filter { matchesRepo(it) && matchesQuery(it) }
+                .sortedWith { a, b ->
+                    val ia = workingOrder.indexOfFirst { it.equals(a.id, true) }.let { if (it < 0) Int.MAX_VALUE else it }
+                    val ib = workingOrder.indexOfFirst { it.equals(b.id, true) }.let { if (it < 0) Int.MAX_VALUE else it }
+                    ia.compareTo(ib)
+                }
+            if (visible.isEmpty()) {
+                providersSection.addView(
+                    TextView(dialogContext).apply {
+                        text = L10n.t("Aucun fournisseur ne correspond.", "No matching provider.")
+                        textSize = 13f
+                        setPadding(0, (density * 8).toInt(), 0, (density * 8).toInt())
+                    },
+                )
+                return
+            }
+            visible.forEach { scraper -> providersSection.addView(buildProviderCard(scraper)) }
+        }
+
+        // ── Onglets par dépôt (REPOSITORY CONTROL façon NuviO) ──
+        val repoTabs = LinearLayout(dialogContext).apply { orientation = LinearLayout.HORIZONTAL }
+        container.addView(
+            HorizontalScrollView(dialogContext).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(repoTabs)
+            },
+        )
+
+        fun refreshRepoTabs() {
+            repoTabs.removeAllViews()
+            fun tab(label: String, repo: String?, selected: Boolean, action: () -> Unit) {
+                repoTabs.addView(
+                    Button(dialogContext).apply {
+                        text = label
+                        isSingleLine = true
+                        textSize = 12f
+                        minWidth = 0
+                        minHeight = 0
+                        setPadding(
+                            (density * 10).toInt(),
+                            (density * 4).toInt(),
+                            (density * 10).toInt(),
+                            (density * 4).toInt(),
+                        )
+                        alpha = if (selected) 1f else 0.55f
+                        setOnClickListener {
+                            action()
+                            refreshRepoTabs()
+                            refreshProviders()
+                        }
+                    },
+                )
+            }
+            tab(
+                L10n.t("Tout (${workingEnabled.size}/${all.size})", "All (${workingEnabled.size}/${all.size})"),
+                null,
+                repoFilter == null,
+            ) { repoFilter = null }
+            val byRepo = LinkedHashMap<String, MutableList<NuvioClient.NuvioScraper>>()
+            all.forEach { scraper -> byRepo.getOrPut(scraper.repoBase) { mutableListOf() }.add(scraper) }
+            byRepo.forEach { (repo, list) ->
+                val enabledHere = list.count { s -> workingEnabled.any { it.equals(s.id, true) } }
+                tab(
+                    "${NuvioClient.repoLabel(repo)} ($enabledHere/${list.size})",
+                    repo,
+                    repoFilter == repo,
+                ) { repoFilter = repo }
             }
         }
+
+        // ── Dépôts installés : actualiser ↻ / supprimer 🗑 + restauration ──
+        val reposSection = LinearLayout(dialogContext).apply { orientation = LinearLayout.VERTICAL }
+        container.addView(reposSection)
+
+        fun refreshRepos() {
+            reposSection.removeAllViews()
+            FrSettings.nuvioRepos.forEach { repo ->
+                val providers = all.filter { it.repoBase == repo }
+                val card = LinearLayout(dialogContext).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(0, (density * 4).toInt(), 0, (density * 4).toInt())
+                }
+                val top = LinearLayout(dialogContext).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+                top.addView(
+                    TextView(dialogContext).apply {
+                        text = "📦 ${NuvioClient.repoLabel(repo)}"
+                        textSize = 13f
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.MIDDLE
+                        layoutParams = LinearLayout.LayoutParams(
+                            0,
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            1f,
+                        )
+                    },
+                )
+                top.addView(
+                    Button(dialogContext).apply {
+                        text = "↻"
+                        contentDescription = L10n.t("Actualiser le dépôt", "Refresh the repository")
+                        minWidth = 0
+                        minHeight = 0
+                        background = null
+                        setOnClickListener {
+                            dialog.dismiss()
+                            NuvioClient.invalidateRepository(repo)
+                            showNuvioPicker(dialogContext)
+                        }
+                    },
+                )
+                top.addView(
+                    Button(dialogContext).apply {
+                        text = "🗑"
+                        contentDescription = L10n.t("Supprimer le dépôt", "Remove the repository")
+                        minWidth = 0
+                        minHeight = 0
+                        background = null
+                        setOnClickListener {
+                            AlertDialog.Builder(dialogContext)
+                                .setTitle(L10n.t("Supprimer le dépôt", "Remove the repository"))
+                                .setMessage(
+                                    L10n.t(
+                                        "Supprimer « ${NuvioClient.repoLabel(repo)} » et bloquer ses ${providers.size} source(s) ? " +
+                                            "Elles ne répondront plus, même fournies par un autre dépôt.",
+                                        "Remove « ${NuvioClient.repoLabel(repo)} » and block its ${providers.size} source(s)? " +
+                                            "They will stop responding, even when provided by another repository.",
+                                    ),
+                                )
+                                .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+                                .setPositiveButton(L10n.t("Supprimer", "Remove")) { _, _ ->
+                                    deleteNuvioRepository(repo, providers)
+                                    dialog.dismiss()
+                                    showNuvioPicker(dialogContext)
+                                }
+                                .show()
+                        }
+                    },
+                )
+                card.addView(top)
+                card.addView(
+                    TextView(dialogContext).apply {
+                        text = "${providers.size} ${L10n.t("fournisseur(s)", "provider(s)")} · " +
+                            repo.substringAfter("://").take(60)
+                        textSize = 11f
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                    },
+                )
+                reposSection.addView(card)
+            }
+            if (FrSettings.nuvioBlocked.isNotEmpty()) {
+                reposSection.addView(
+                    Button(dialogContext).apply {
+                        text = L10n.t(
+                            "♻️ Restaurer les ${FrSettings.nuvioBlocked.size} source(s) supprimée(s)",
+                            "♻️ Restore the ${FrSettings.nuvioBlocked.size} removed source(s)",
+                        )
+                        isSingleLine = false
+                        textSize = 12f
+                        setPadding(0, (density * 6).toInt(), 0, 0)
+                        setOnClickListener {
+                            FrSettings.saveNuvioBlocked(emptySet())
+                            dialog.dismiss()
+                            showNuvioPicker(dialogContext)
+                        }
+                    },
+                )
+            }
+        }
+
+        // ── Filtre de qualité (chips façon NuviO : tap = exclure) ──
+        val qualityChips = LinearLayout(dialogContext).apply { orientation = LinearLayout.HORIZONTAL }
+        container.addView(
+            HorizontalScrollView(dialogContext).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(qualityChips)
+            },
+        )
+
+        fun refreshQualityChips() {
+            qualityChips.removeAllViews()
+            val excluded = FrSettings.nuvioQualityExcludes
+            fun chip(label: String, action: () -> Unit) {
+                qualityChips.addView(
+                    Button(dialogContext).apply {
+                        text = label
+                        isSingleLine = true
+                        textSize = 12f
+                        minWidth = 0
+                        minHeight = 0
+                        setPadding(
+                            (density * 8).toInt(),
+                            (density * 2).toInt(),
+                            (density * 8).toInt(),
+                            (density * 2).toInt(),
+                        )
+                        setOnClickListener { action() }
+                    },
+                )
+            }
+            chip(
+                if (excluded.isEmpty()) {
+                    L10n.t("Auto", "Auto")
+                } else {
+                    L10n.t("✗ Auto (réinitialiser)", "✗ Auto (reset)")
+                },
+            ) {
+                FrSettings.saveNuvioQualityExcludes(emptySet())
+                refreshQualityChips()
+            }
+            QUALITY_FILTER_TAGS.forEach { tag ->
+                chip(
+                    if (excluded.any { it.equals(tag, true) }) "✗ $tag" else tag,
+                ) {
+                    val next = excluded.toMutableSet()
+                    val current = next.firstOrNull { it.equals(tag, true) }
+                    if (current != null) {
+                        next.remove(current)
+                    } else {
+                        next.add(tag)
+                    }
+                    FrSettings.saveNuvioQualityExcludes(next)
+                    refreshQualityChips()
+                }
+            }
+        }
+
+        search.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(text: Editable?) {
+                query = text?.toString().orEmpty()
+                refreshProviders()
+            }
+        })
+
+        refreshStats()
+        refreshRepoTabs()
+        refreshRepos()
+        refreshQualityChips()
+        refreshProviders()
+
+        fun savePickerState() {
+            val visibleIds = all.map { it.id.lowercase() }.toSet()
+            val enabled = if (wildcardMode) {
+                val hiddenExclusions = FrSettings.nuvioEnabled
+                    .filter { it.startsWith('!') && it.removePrefix("!").lowercase() !in visibleIds }
+                val unchecked = all.map { it.id }
+                    .filterNot { id -> workingEnabled.any { it.equals(id, true) } }
+                listOf("all") + hiddenExclusions + unchecked.map { "!$it" }
+            } else {
+                val hiddenExplicit = FrSettings.nuvioEnabled.filter { value ->
+                    value != "all" && !value.startsWith('!') && value.lowercase() !in visibleIds
+                }
+                hiddenExplicit + workingEnabled.toList()
+            }
+            val finalOrder = workingOrder + FrSettings.nuvioOrder.filterNot { saved ->
+                workingOrder.any { it.equals(saved, true) }
+            }
+            preferences.edit()
+                .putString(
+                    FrSettings.KEY_NUVIO_ENABLED,
+                    enabled.distinctBy(String::lowercase).joinToString("\n"),
+                )
+                .putString(
+                    FrSettings.KEY_NUVIO_ORDER,
+                    finalOrder.distinctBy(String::lowercase).joinToString("\n"),
+                )
+                .apply()
+            displayToast(
+                L10n.t(
+                    "Nuvio : ${workingEnabled.size} source(s) active(s)",
+                    "Nuvio: ${workingEnabled.size} active source(s)",
+                ),
+                Toast.LENGTH_LONG,
+            )
+            dialog.dismiss()
+        }
+
+        dialog = AlertDialog.Builder(dialogContext)
+            .setTitle(L10n.t("Sources Nuvio", "Nuvio sources"))
+            .setMessage(
+                L10n.t(
+                    "↑↓ classe (le haut part d'abord) · 🧪 teste · 🗑 ou appui long : supprime le dépôt.",
+                    "↑↓ ranks (top is tried first) · 🧪 tests · 🗑 or long-press: removes the repository.",
+                ),
+            )
+            .setView(cappedScroll(dialogContext, container))
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .setNeutralButton(L10n.t("Tout activer", "Enable all"), null)
+            .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ -> savePickerState() }
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                // « Tout activer » : comme dans NuviO, tous les sites du dépôt partent.
+                wildcardMode = true
+                workingEnabled.clear()
+                workingEnabled.addAll(all.map { it.id })
+                refreshStats()
+                refreshRepoTabs()
+                refreshProviders()
+            }
+        }
+        runCatching { dialog.show() }
+            .onFailure {
+                displayToast(
+                    L10n.t(
+                        "Impossible d'ouvrir le sélecteur Nuvio",
+                        "Cannot open the Nuvio picker",
+                    ),
+                    Toast.LENGTH_LONG,
+                )
+            }
     }
 
     /**
@@ -2960,11 +3423,7 @@ class FrUnified : Source() {
                     "${preferences.all.size} settings ready to export.",
                 ),
             )
-            .setView(
-                ScrollView(dialogContext).apply {
-                    addView(container)
-                },
-            )
+            .setView(cappedScroll(dialogContext, container))
             .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
             .create()
         picker.onSingle = { which ->
@@ -3121,11 +3580,7 @@ class FrUnified : Source() {
         container.addView(picker.listContainer)
         val dialog = AlertDialog.Builder(dialogContext)
             .setTitle(L10n.t("Restaurer une sauvegarde", "Restore a backup"))
-            .setView(
-                ScrollView(dialogContext).apply {
-                    addView(container)
-                },
-            )
+            .setView(cappedScroll(dialogContext, container))
             .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
             .create()
         picker.onSingle = { which ->
@@ -3225,11 +3680,7 @@ class FrUnified : Source() {
         container.addView(picker.listContainer)
         val dialog = AlertDialog.Builder(dialogContext)
             .setTitle(L10n.t("Choisir un fichier de sauvegarde", "Choose a backup file"))
-            .setView(
-                ScrollView(dialogContext).apply {
-                    addView(container)
-                },
-            )
+            .setView(cappedScroll(dialogContext, container))
             .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
             .create()
         picker.onSingle = { which ->
@@ -3515,11 +3966,7 @@ class FrUnified : Source() {
                                 "and popup tolerance are chosen here.",
                         ),
                     )
-                    .setView(
-                        ScrollView(dialogContext).apply {
-                            addView(container)
-                        },
-                    )
+                    .setView(cappedScroll(dialogContext, container))
                     .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
                     .show()
             }
@@ -3662,11 +4109,7 @@ class FrUnified : Source() {
                             "Stremio catalog (${catalogs.size} + all)",
                         ),
                     )
-                    .setView(
-                        ScrollView(dialogContext).apply {
-                            addView(container)
-                        },
-                    )
+                    .setView(cappedScroll(dialogContext, container))
                     .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
                     .create()
                 picker.onSingle = { index ->
@@ -3692,18 +4135,20 @@ class FrUnified : Source() {
         }
     }
 
+    /**
+     * Sélecteur « Choisir les addons » (16.17, façon écran d'addons NuviO) :
+     * aperçu (addons / actifs / catalogues), recherche, et une carte par addon :
+     * interrupteur, classement (↑↓, « celui qui va le premier »), nombre de
+     * catalogues exposés et suppression (🗑).
+     */
     private fun showStremioPicker(dialogContext: Context) {
         val choices = FrSettings.stremioUrls.distinct().map { addon ->
             val clean = StremioClient.base(addon)
             val display = clean.substringAfter("://").removeSuffix("/manifest.json").take(90)
             val locale = Regex("/[a-z]{2}-[A-Z]{2}(?:/|$)").find("$clean/")?.value?.trim('/')
             val flag = locale?.let { FrSettings.flagForLanguages(listOf(it)) } ?: "🌐"
-            val recommended = if (FrSettings.DEFAULT_STREMIO_ADDONS.any { StremioClient.base(it) == clean }) {
-                L10n.t(" ★ conseillée", " ★ recommended")
-            } else {
-                ""
-            }
-            SourceChoice("$flag $display$recommended", clean, FrSettings.isStremioEnabled(clean))
+            val recommended = FrSettings.DEFAULT_STREMIO_ADDONS.any { StremioClient.base(it) == clean }
+            AddonCard(clean, display, flag, recommended, FrSettings.isStremioEnabled(clean))
         }
         if (choices.isEmpty()) {
             displayToast(
@@ -3712,33 +4157,80 @@ class FrUnified : Source() {
             )
             return
         }
+        val catalogs = StremioCatalog.cachedCatalogs()
         val density = dialogContext.resources.displayMetrics.density
         val padding = (density * 12).toInt()
+
+        val workingEnabled = choices.filter { it.enabled }.map { it.value }.toMutableSet()
+        // Classement des addons (celui du haut part d'abord) : les flèches ↑↓
+        // réordonnent la liste ET l'enregistrent tout de suite.
+        var workingOrder = choices.map { it.value }
+        var query = ""
+
+        lateinit var dialog: AlertDialog
         val container = LinearLayout(dialogContext).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(padding, padding, padding, padding)
         }
-        val picker = ListPicker(dialogContext).build(
-            choices.map(SourceChoice::label),
-            multi = true,
-            checked = BooleanArray(choices.size) { choices[it].enabled },
-        )
-        picker.onLongClick = { position ->
-            // Suppression d'un addon : retiré de la liste ET désactivé (les addons
-            // par défaut ne doivent pas ressusciter via la fusion des valeurs).
-            val addon = choices[position].value
+
+        // ── Aperçu : N addons · K actifs · C catalogues ──
+        val stats = TextView(dialogContext).apply {
+            textSize = 13f
+            setPadding(0, 0, 0, (density * 8).toInt())
+        }
+        container.addView(stats)
+
+        fun refreshStats() {
+            stats.text = L10n.t(
+                "${choices.size} addon(s) · ${workingEnabled.size} actif(s) · ${catalogs.size} catalogue(s)",
+                "${choices.size} addon(s) · ${workingEnabled.size} active · ${catalogs.size} catalog(s)",
+            )
+        }
+
+        val search = EditText(dialogContext).apply {
+            hint = L10n.t("Rechercher un addon…", "Search an addon…")
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
+        container.addView(search)
+
+        fun matchesQuery(choice: AddonCard): Boolean {
+            val q = query.trim().lowercase()
+            if (q.isEmpty()) return true
+            return choice.display.lowercase().contains(q)
+        }
+
+        // ── Classement : monter/descendre un addon (celui du haut part d'abord) ──
+        fun moveInOrder(value: String, direction: Int) {
+            val index = workingOrder.indexOfFirst { it.equals(value, true) }
+            if (index < 0) return
+            val target = (index + direction).coerceIn(0, workingOrder.size - 1)
+            if (target == index) return
+            val swapped = workingOrder.toMutableList()
+            val tmp = swapped[index]
+            swapped[index] = swapped[target]
+            swapped[target] = tmp
+            workingOrder = swapped
+            // On conserve les entrées enregistrées qui ne sont plus chargées ici.
+            val merged = swapped + FrSettings.stremioOrder.filterNot { saved ->
+                swapped.any { it.equals(saved, true) }
+            }
+            FrSettings.saveStremioOrder(merged)
+        }
+
+        // ── Suppression « vraiment » : retiré de la liste ET désactivé ──
+        fun confirmRemove(choice: AddonCard) {
             AlertDialog.Builder(dialogContext)
                 .setTitle(L10n.t("Supprimer l'addon", "Remove the addon"))
                 .setMessage(
                     L10n.t(
-                        "Supprimer « ${addon.substringAfter("://").removeSuffix("/manifest.json")} » ?",
-                        "Remove « ${addon.substringAfter("://").removeSuffix("/manifest.json")} »?",
+                        "Supprimer « ${choice.display} » ?",
+                        "Remove « ${choice.display} »?",
                     ),
                 )
                 .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
                 .setPositiveButton(L10n.t("Supprimer", "Remove")) { _, _ ->
-                    val remaining = FrSettings.stremioUrls.filter { it != addon }
-                    val disabled = FrSettings.stremioDisabled + addon
+                    val remaining = FrSettings.stremioUrls.filter { it != choice.value }
+                    val disabled = FrSettings.stremioDisabled + choice.value
                     preferences.edit()
                         .putString(FrSettings.KEY_STREMIO, remaining.joinToString("\n"))
                         .putString(FrSettings.KEY_STREMIO_DISABLED, disabled.distinct().joinToString("\n"))
@@ -3747,51 +4239,179 @@ class FrUnified : Source() {
                         L10n.t("Addon supprimé", "Addon removed"),
                         Toast.LENGTH_LONG,
                     )
+                    dialog.dismiss()
+                    showStremioPicker(dialogContext)
                 }
                 .show()
-            true
         }
-        container.addView(picker.listContainer)
-        val activeCount = choices.count { it.enabled }
-        val dialog = AlertDialog.Builder(dialogContext)
-            .setTitle(
-                L10n.t(
-                    "Stremio ($activeCount/${choices.size} actifs)",
-                    "Stremio ($activeCount/${choices.size} active)",
-                ),
-            )
-            .setMessage(
-                L10n.t(
-                    "Appuyez longuement pour supprimer un addon.",
-                    "Long-press to remove an addon.",
-                ),
-            )
-            .setView(
-                ScrollView(dialogContext).apply {
-                    addView(container)
+
+        val listSection = LinearLayout(dialogContext).apply { orientation = LinearLayout.VERTICAL }
+        container.addView(listSection)
+
+        fun refreshList() {
+            listSection.removeAllViews()
+            val visible = choices
+                .filter { matchesQuery(it) }
+                .sortedWith { a, b ->
+                    val ia = workingOrder.indexOfFirst { it.equals(a.value, true) }.let { if (it < 0) Int.MAX_VALUE else it }
+                    val ib = workingOrder.indexOfFirst { it.equals(b.value, true) }.let { if (it < 0) Int.MAX_VALUE else it }
+                    ia.compareTo(ib)
+                }
+            if (visible.isEmpty()) {
+                listSection.addView(
+                    TextView(dialogContext).apply {
+                        text = L10n.t("Aucun addon ne correspond.", "No matching addon.")
+                        textSize = 13f
+                        setPadding(0, (density * 8).toInt(), 0, (density * 8).toInt())
+                    },
+                )
+                return
+            }
+            visible.forEach { choice ->
+                listSection.addView(buildAddonCard(choice, catalogs.count { it.addonBase == choice.value }))
+            }
+        }
+
+        // ── Une carte addon : interrupteur + catalogues + classement + suppression ──
+        fun buildAddonCard(choice: AddonCard, catalogCount: Int): View {
+            val card = LinearLayout(dialogContext).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, (density * 6).toInt(), 0, (density * 6).toInt())
+                isClickable = true
+                isFocusable = true
+            }
+            val top = LinearLayout(dialogContext).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val recommended = if (choice.recommended) {
+                L10n.t(" ★ conseillée", " ★ recommended")
+            } else {
+                ""
+            }
+            top.addView(
+                TextView(dialogContext).apply {
+                    text = "${choice.flag} ${choice.display}$recommended"
+                    textSize = 14f
+                    maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
+                    layoutParams = LinearLayout.LayoutParams(
+                        0,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        1f,
+                    )
                 },
             )
-            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
-            .setNeutralButton(L10n.t("Tout activer", "Enable all"), null)
-            .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
-                val visible = choices.map(SourceChoice::value).toSet()
-                val disabled = FrSettings.stremioDisabled.filterNot(visible::contains) +
-                    choices.indices.filter { !picker.isChecked(it) }.map { choices[it].value }
-                preferences.edit()
-                    .putString(FrSettings.KEY_STREMIO_DISABLED, disabled.distinct().joinToString("\n"))
-                    .apply()
-                val activeNow = choices.indices.count { picker.isChecked(it) }
-                displayToast(
-                    L10n.t(
-                        "Stremio : $activeNow addon(s) actif(s)",
-                        "Stremio: $activeNow active addon(s)",
-                    ),
+            top.addView(
+                Switch(dialogContext).apply {
+                    isChecked = workingEnabled.any { it.equals(choice.value, true) }
+                    isClickable = false
+                    isFocusable = false
+                },
+            )
+            card.addView(top)
+            card.addView(
+                TextView(dialogContext).apply {
+                    text = "$catalogCount ${L10n.t("catalogue(s)", "catalog(s)")}"
+                    textSize = 12f
+                    maxLines = 1
+                },
+            )
+            val actions = LinearLayout(dialogContext).apply { orientation = LinearLayout.HORIZONTAL }
+            fun actionButton(symbol: String, description: String, action: () -> Unit) {
+                actions.addView(
+                    Button(dialogContext).apply {
+                        text = symbol
+                        contentDescription = description
+                        minWidth = 0
+                        minHeight = 0
+                        background = null
+                        setPadding((density * 6).toInt(), 0, (density * 6).toInt(), 0)
+                        setOnClickListener { action() }
+                    },
                 )
             }
+            actionButton("↑", L10n.t("Monter dans le classement", "Move up in the ranking")) {
+                moveInOrder(choice.value, -1)
+                refreshList()
+            }
+            actionButton("↓", L10n.t("Descendre dans le classement", "Move down in the ranking")) {
+                moveInOrder(choice.value, 1)
+                refreshList()
+            }
+            actionButton("🗑", L10n.t("Supprimer l'addon", "Remove the addon")) {
+                confirmRemove(choice)
+            }
+            card.addView(actions)
+            card.setOnClickListener {
+                if (workingEnabled.any { it.equals(choice.value, true) }) {
+                    workingEnabled.removeAll { it.equals(choice.value, true) }
+                } else {
+                    workingEnabled.add(choice.value)
+                }
+                refreshStats()
+                refreshList()
+            }
+            card.setOnLongClickListener {
+                confirmRemove(choice)
+                true
+            }
+            return card
+        }
+
+        search.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(text: Editable?) {
+                query = text?.toString().orEmpty()
+                refreshList()
+            }
+        })
+
+        refreshStats()
+        refreshList()
+
+        fun savePickerState() {
+            val visible = choices.map { it.value }.toSet()
+            val disabled = FrSettings.stremioDisabled.filterNot { it in visible } +
+                choices.filterNot { it.value in workingEnabled }.map { it.value }
+            preferences.edit()
+                .putString(FrSettings.KEY_STREMIO_DISABLED, disabled.distinct().joinToString("\n"))
+                .apply()
+            FrSettings.saveStremioOrder(
+                workingOrder + FrSettings.stremioOrder.filterNot { saved ->
+                    workingOrder.any { it.equals(saved, true) }
+                },
+            )
+            displayToast(
+                L10n.t(
+                    "Stremio : ${workingEnabled.size} addon(s) actif(s)",
+                    "Stremio: ${workingEnabled.size} active addon(s)",
+                ),
+            )
+            dialog.dismiss()
+        }
+
+        dialog = AlertDialog.Builder(dialogContext)
+            .setTitle(L10n.t("Addons Stremio", "Stremio addons"))
+            .setMessage(
+                L10n.t(
+                    "↑↓ classe (le haut part d'abord) · 🗑 ou appui long : supprime l'addon.",
+                    "↑↓ ranks (top is tried first) · 🗑 or long-press: removes the addon.",
+                ),
+            )
+            .setView(cappedScroll(dialogContext, container))
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .setNeutralButton(L10n.t("Tout activer", "Enable all"), null)
+            .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ -> savePickerState() }
             .create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                picker.setAll(true)
+                // « Tout activer » : tous les addons ajoutés servent.
+                workingEnabled.clear()
+                workingEnabled.addAll(choices.map { it.value })
+                refreshStats()
+                refreshList()
             }
         }
         runCatching { dialog.show() }
@@ -3805,6 +4425,16 @@ class FrUnified : Source() {
                 )
             }
     }
+
+    /** Une carte d'addon dans le sélecteur façon NuviO. */
+    private data class AddonCard(
+        val value: String,
+        val display: String,
+        val flag: String,
+        val recommended: Boolean,
+        val enabled: Boolean,
+    )
+
     private fun showExternalSourceDialog(
         dialogContext: Context,
         expectedKind: ExternalSourceImporter.Kind,
@@ -3911,6 +4541,18 @@ class FrUnified : Source() {
         editor.apply()
         if (result.kind == ExternalSourceImporter.Kind.NUVIO) {
             NuvioClient.invalidateRepository(result.url)
+            // Réajouter un dépôt supprimé lève le blocage de ses providers (16.17).
+            settingsScope.launch {
+                val providers = trySuspend { NuvioClient.scrapersForRepo(result.url) }
+                    .getOrDefault(emptyList())
+                if (providers.isNotEmpty()) {
+                    val ids = providers.map { it.id.lowercase() }.toSet()
+                    val unblocked = FrSettings.nuvioBlocked - ids
+                    if (unblocked != FrSettings.nuvioBlocked) {
+                        FrSettings.saveNuvioBlocked(unblocked)
+                    }
+                }
+            }
         }
     }
 

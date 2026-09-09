@@ -365,7 +365,15 @@ object StremioCatalog {
                     targets = candidates,
                 )
             }
-        return (matched + unavailable).distinctBy(StreamAddon::base)
+        // Rang des addons : celui du haut du sélecteur (flèches ↑↓) est interrogé d'abord.
+        val order = FrSettings.stremioOrder
+        return (matched + unavailable)
+            .distinctBy(StreamAddon::base)
+            .sortedWith { a, b ->
+                val ia = order.indexOfFirst { it.equals(a.base, true) }.let { if (it < 0) Int.MAX_VALUE else it }
+                val ib = order.indexOfFirst { it.equals(b.base, true) }.let { if (it < 0) Int.MAX_VALUE else it }
+                ia.compareTo(ib)
+            }
     }
 
     suspend fun streamAddonBases(type: String, id: String): List<String> =

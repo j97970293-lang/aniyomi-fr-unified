@@ -1,5 +1,18 @@
 # Historique des versions
 
+## 16.17 — 10 septembre 2026
+
+- **sélecteur « Choisir les sources » repensé façon NuviO** : aperçu (N dépôts · M fournisseurs · K actifs), onglets par dépôt (avec compteurs actifs/total), zone de recherche, cartes « Dépôts installés » (↻ actualiser, 🗑 supprimer), et une carte par fournisseur : interrupteur, classement **↑↓ intégré à la liste** (celui du haut est interrogé d'abord), drapeau de langue, dépôt et types (movie | tv), dernier résultat du diagnostic, bouton **🧪 « Tester le fournisseur »**, bouton **⚙️** si la source demande des clés, et **🗑** / appui long pour supprimer tout le dépôt ;
+- **filtre de qualité façon NuviO** : chips Auto/4K/1080p/720p/480p/360p/HDR/DV/REMUX/CAM/TS — un appui exclut cette qualité/marque de la liste des serveurs (l'exclusion s'applique aussi aux résultats déjà trouvés) ;
+- **serveurs affichés PROGRESSIVEMENT pendant la recherche** : les moteurs Nuvio et Stremio partent en même temps (comme dans NuviO) ; les serveurs des sites rapides s'affichent d'abord, la recherche continue en arrière-plan et chaque nouvel affichage de l'écran de serveurs (réouverture, épisode suivant) montre les résultats qui ont suivi — plus de liste bloquée au site le plus lent ;
+- **classement des addons Stremio** : le sélecteur « Choisir les addons » reprend l'écran NuviO (interrupteur par addon, ★ conseillés, nombre de catalogues exposés, **↑↓** pour l'ordre — celui du haut part d'abord, 🗑 / appui long pour supprimer vraiment) ; l'ordre des addons décide du premier addon interrogé ;
+- **suppression d'un dépôt Nuvio « vraiment »** : les sources du dépôt supprimé sont retirées ET bloquées — elles ne reviennent plus même si un autre dépôt déclare le même identifiant ; réajouter l'URL du dépôt (ou « Restaurer » dans le sélecteur) les réactive ;
+- **tous les sites sont listés** : le sélecteur affiche tous les fournisseurs de tous les dépôts (pas seulement les 20 activés) ; « Tout activer » part sur tous, et un fournisseur désactivé reste visible ;
+- **bouton « Enregistrer » toujours à l'écran** : les longues listes de dialogues (langues des catalogues, sources, configuration, sauvegardes, diagnostic, catalogue Stremio) sont désormais dans une zone défilable bornée à ~58 % de la hauteur d'écran ;
+- **extension plus de marque « obsolète »** : l'index du dépôt est corrigé — l'identifiant de source était publié sous forme de texte alors qu'Aniyomi attend un nombre (le parseur strict refusait l'index, l'extension restait « obsolète » même à jour) ; le dépôt est en outre servi via GitHub Pages ;
+- **parallélisme Nuvio porté à 6** par défaut (2 à 8 au choix) et budget de site relevé à 25 s : les grands dépôts (25+ sites) répondent nettement plus vite ;
+- **dépôt** : `source_id` numérique dans `tools/create-repo.py` ; mise à jour `extVersionCode = 17`.
+
 ## 16.16 — 9 septembre 2026
 
 - **tous les sites Nuvio sont interrogés, comme dans NuviO** : les installations qui conservaient une ancienne liste de 6 sources « conseillées » passent automatiquement à « tout » (migration des réglages v11) ; le sélecteur Nuvio a maintenant un bouton **« Tout activer »** en un geste ;

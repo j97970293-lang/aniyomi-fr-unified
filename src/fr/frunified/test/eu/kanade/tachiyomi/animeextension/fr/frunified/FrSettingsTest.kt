@@ -9,12 +9,14 @@ import java.lang.reflect.Proxy
 
 class FrSettingsTest {
     @Test
-    fun freshInstallEnablesCompatibleProvidersExceptRejectedMovix() {
+    fun freshInstallEnablesEveryProviderIncludingMovix() {
         FrSettings.init(preferences(emptyMap()))
 
         assertTrue(FrSettings.isNuvioEnabled("frenchstream"))
         assertTrue(FrSettings.isNuvioEnabled("new-provider-from-a-manifest"))
-        assertFalse(FrSettings.isNuvioEnabled("movix"))
+        // Par défaut « all » : TOUS les sites partent, movix compris (16.17).
+        // Les 403 de ce site sont en amont (CDN) : on ne le coupe plus dans notre code.
+        assertTrue(FrSettings.isNuvioEnabled("movix"))
     }
 
     @Test

@@ -1,6 +1,6 @@
 # FR Unifié pour Aniyomi
 
-**FR Unifié 16.16** est une extension Aniyomi autonome qui réunit catalogues, fiches, épisodes et sources de lecture dans une seule interface.
+**FR Unifié 16.17** est une extension Aniyomi autonome qui réunit catalogues, fiches, épisodes et sources de lecture dans une seule interface.
 
 ## Fonctions principales
 
@@ -89,7 +89,7 @@ Une fois l’import confirmé, ouvrez **Nuvio → choisir les sources** : les **
 
 Les bundles internationaux utilisent parfois des fonctions Node ou des sites qui changent sans préavis. Le moteur apporte des polyfills Rhino, abaisse les boucles `for…of` et corrige plusieurs incompatibilités de portée, mais la disponibilité d’un provider tiers n’est jamais garantie.
 
-## Flux, langues et qualités (16.16)
+## Flux, langues et qualités (16.17)
 
 Chaque flux est présenté de la même façon, quel que soit le moteur :
 
@@ -125,7 +125,7 @@ Puis installez **FR Unifié** depuis **Parcourir → Extensions Anime**.
 Le fichier de version est nommé :
 
 ```text
-FR-Unifie-Aniyomi-v16.16.apk
+FR-Unifie-Aniyomi-v16.17.apk
 ```
 
 Android peut demander l’autorisation d’installer depuis la source utilisée. Lors du premier lancement, Aniyomi peut aussi demander de faire confiance au certificat de l’extension.

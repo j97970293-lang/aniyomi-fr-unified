@@ -21,12 +21,14 @@ def match(pattern: str, text: str, label: str) -> str:
     return result.group(1)
 
 
-def source_id(name: str, lang: str, version_id: int) -> str:
+def source_id(name: str, lang: str, version_id: int) -> int:
+    # NB : Aniyomi décode l'index avec kotlinx.serialization en mode strict :
+    # le champ « id » doit être un NOMBRE JSON (Long), jamais une chaîne.
     digest = hashlib.md5(f"{name.lower()}/{lang}/{version_id}".encode()).digest()
     value = 0
     for index in range(8):
         value |= (digest[index] & 0xFF) << (8 * (7 - index))
-    return str(value & 0x7FFFFFFFFFFFFFFF)
+    return value & 0x7FFFFFFFFFFFFFFF
 
 
 def find_sdk_tool(name: str) -> Path:
