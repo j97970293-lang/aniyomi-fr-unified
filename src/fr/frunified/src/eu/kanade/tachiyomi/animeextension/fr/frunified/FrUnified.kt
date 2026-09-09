@@ -570,7 +570,7 @@ class FrUnified : Source() {
         (
             listOf(L10n.t("⚡ Tout (tous les catalogues)", "⚡ All (every catalog)")) +
                 catalogs.map(StremioCatalog.Catalog::label)
-        ).toTypedArray(),
+            ).toTypedArray(),
     ) {
         init {
             state = when {
@@ -638,10 +638,14 @@ class FrUnified : Source() {
             )
             add(StremioCatalogFilter(catalogs, selected.key))
             // « Tout » n'a pas d'options propres : elles sont propres à chaque catalogue.
-            val extras = if (isAll) emptyList() else selected.extras.filter {
-                it.options.isNotEmpty() &&
-                    !it.name.equals("search", true) &&
-                    !it.name.equals("skip", true)
+            val extras = if (isAll) {
+                emptyList()
+            } else {
+                selected.extras.filter {
+                    it.options.isNotEmpty() &&
+                        !it.name.equals("search", true) &&
+                        !it.name.equals("skip", true)
+                }
             }
             if (extras.isNotEmpty()) {
                 add(
