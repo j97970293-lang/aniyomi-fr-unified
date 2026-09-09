@@ -20,6 +20,9 @@ object FrSettings {
     /** Vérification du contenu des liens (anti-popups / anti-pages HTML) avant lecture. */
     const val KEY_VERIFY_STREAM_CONTENT = "verify_stream_content"
 
+    /** Tolère les liens 403 (CDN stricts : Movix, FSVid) : conservés au lieu d'être écartés. */
+    const val KEY_NUVIO_TOLERATE_403 = "nuvio_tolerate_403"
+
     const val KEY_STREMIO = "stremio_urls"
     const val KEY_STREMIO_DISABLED = "stremio_disabled"
     const val KEY_USE_STREMIO = "use_stremio"
@@ -514,6 +517,7 @@ object FrSettings {
             .takeIf { it in setOf("classic", "merged", "split") } ?: "classic"
 
     val verifyStreamContent: Boolean get() = bool(KEY_VERIFY_STREAM_CONTENT, true)
+    val tolerate403: Boolean get() = bool(KEY_NUVIO_TOLERATE_403, true)
 
     val apiTokens: Map<String, String>
         get() = string(KEY_TOKENS, "").lineSequence()

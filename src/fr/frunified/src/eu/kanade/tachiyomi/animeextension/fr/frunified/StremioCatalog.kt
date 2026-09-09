@@ -273,7 +273,7 @@ object StremioCatalog {
         val base = StremioClient.base(rawBase)
         val now = System.currentTimeMillis()
         manifestCache[base]?.let { (expires, addon) -> if (expires > now) return addon }
-        val root = runCatching { FrRuntime.getJson("$base/manifest.json") }.getOrNull()
+        val root = trySuspend { FrRuntime.getJson("$base/manifest.json") }.getOrNull()
         if (root == null) {
             manifestCache[base] = (now + 5 * 60 * 1000L) to null
             return null
@@ -418,7 +418,7 @@ object StremioCatalog {
         }
         targets.map { catalog ->
             async {
-                runCatching { requestCatalog(catalog, page, query, selectedExtras) }.getOrDefault(emptyList())
+                trySuspend { requestCatalog(catalog, page, query, selectedExtras) }.getOrDefault(emptyList())
             }
         }.awaitAll().flatten().distinctBy { it.id.serialize() }
     }
@@ -479,11 +479,16 @@ object StremioCatalog {
             addons()
                 .filter { it.supports("meta", ref.type, ref.id) }
                 .map(Addon::base)
-        val value = preferred.distinct().firstNotNullOfOrNull { addon ->
-            runCatching {
+        var value: JSONObject? = null
+        for (addon in preferred.distinct()) {
+            val candidate = trySuspend {
                 FrRuntime.getJson("$addon/meta/${encode(ref.type)}/${encode(ref.id)}.json")
                     .optJSONObject("meta")
             }.getOrNull()
+            if (candidate != null) {
+                value = candidate
+                break
+            }
         }
         metaCache[cacheKey] = (now + META_CACHE_MS) to value
         return value

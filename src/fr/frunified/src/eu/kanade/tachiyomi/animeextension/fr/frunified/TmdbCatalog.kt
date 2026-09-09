@@ -32,7 +32,7 @@ object TmdbCatalog {
         val requestUrl = url(path, params)
         val now = System.currentTimeMillis()
         cache[requestUrl]?.let { (expires, value) -> if (expires > now) return value }
-        val json = runCatching { FrRuntime.getJson(requestUrl) }.getOrNull() ?: return null
+        val json = trySuspend { FrRuntime.getJson(requestUrl) }.getOrNull() ?: return null
         cache[requestUrl] = (now + CACHE_TTL) to json
         return json
     }
@@ -155,7 +155,7 @@ object TmdbCatalog {
         for (year in years) {
             var best: Pair<Double, Int>? = null
             for (title in payload.titles.take(6)) {
-                val item = runCatching { searchBest(title, year, payload.titles) }.getOrNull() ?: continue
+                val item = trySuspend { searchBest(title, year, payload.titles) }.getOrNull() ?: continue
                 val id = item.id.id.toIntOrNull() ?: continue
                 val score = item.titles.maxOfOrNull { TitleMatch.score(payload.titles, it, year, item.year) } ?: 0.0
                 if (best == null || score > best!!.first) best = score to id

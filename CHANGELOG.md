@@ -1,11 +1,21 @@
 # Historique des versions
 
-## 16.14 — 8 septembre 2026
+## 16.14 — 9 septembre 2026
 
 - **tous les sites, toujours** : suppression des modes de recherche rapide/équilibré/complet et de l'arrêt quand une VF est trouvée — tous les sites activés sont interrogés jusqu'au bout, en parallèle ; chaque site renvoie l'intégralité de ses liens (bornés uniquement par « flux maximum par site », illimité par défaut). C'est la cause principale du « seulement 2 sites sur 27 répondent » ;
 - **configuration des sources dans l'application** : les variables d'environnement demandées par un manifest Nuvio (`env` / `requiredEnv` : clés API, jetons, domaines…) se saisissent dans « Configurer les sources » ; une source dont une clé obligatoire est vide n'est pas exécutée et est signalée « ⚙️ à configurer » dans le sélecteur et le diagnostic ;
 - **moteur Rhino durci** pour les bundles de sites tiers (ex. Peachify, Moviebox) : polyfills complémentaires — `String.padStart/padEnd`, `trimStart/trimEnd`, `includes/startsWith/endsWith`, `Array.includes/find/findIndex`, `Array.from`, `Object.assign`, `Number.isInteger/isNaN/isFinite`, `performance.now` ;
 - nettoyage des réglages obsolètes : les clés « langues Nuvio » et « modes de recherche » sont supprimées (migration des réglages v10) ;
+
+### Corrections d'interface (retours de la 16.14 bêta)
+
+- **listes à nouveau visibles partout** : les listes des dialogues (langues des catalogues, catalogue Stremio, catalogue des sources Stremio, sources Nuvio, sous-titres, sauvegardes, choix DNS, ajout de langue) sont rendues par l'extension elle-même avec des dimensions et des couleurs de texte explicites — les listes natives s'affichaient vides sous le thème de l'application hôte ;
+- **classements lisibles et fonctionnels** : dans « Classer les flux » et « Classer les sources Nuvio », les libellés (n° + langue/qualité, nom + dépôt) sont visibles à nouveau et les flèches ⏫ ▲ ▼ ⏬ replacent correctement les entrées (dimensions explicites des boutons et de la colonne de texte) ;
+- **recherche de source** : le sélecteur Nuvio dispose d'une zone de recherche en haut de liste pour filtrer les sources par nom (utile avec plus d'une centaine de sources) ;
+- **configuration par source depuis le sélecteur** : chaque source qui déclare des variables d'environnement affiche un bouton ⚙️ sur sa ligne — ouvre directement la configuration de cette source sans quitter la liste ;
+- **options de recherche complètes** : les options de parallélisme « 4 — rapide » et « 6 — parallèle » ne sont plus coupées (boutons radio empilés verticalement), plus l'ordre des sources au texte (cas avancé) et l'option « Garder les liens 403 (CDN stricts : Movix, FSVid) » ;
+- **lien 403 conservé (Movix)** : par défaut les liens refusés en 403 (souvent un problème du créateur du dépôt / CDN strict, ex. Movix) ne sont plus écartés automatiquement ; désactivable dans « Options de recherche des sources » ;
+- **diagnostic étendu** : on choisit combien de sources actives tester (5, 20 ou toutes), elles sont testées en parallèle, et une option « Tolérer les pages HTML/popup (comptées comme OK) » restaure la tolérance des popups pendant le test ;
 - mise à jour `extVersionCode = 14`.
 
 ## 16.13 — 8 septembre 2026

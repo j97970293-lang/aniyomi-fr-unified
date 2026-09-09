@@ -339,10 +339,10 @@ object NuvioClient {
         val startedAt = System.currentTimeMillis()
         val repos = FrSettings.nuvioRepos.filter { FrSettings.isNuvioRepoEnabled(it) }
         repos.forEach(::invalidateRepository)
-        val scrapers = runCatching { scrapers() }.getOrDefault(emptyList())
+        val scrapers = trySuspend { scrapers() }.getOrDefault(emptyList())
         val results = coroutineScope {
             scrapers.chunked(4).flatMap { batch ->
-                batch.map { scraper -> async { runCatching { refreshScript(scraper) }.getOrNull() } }.awaitAll()
+                batch.map { scraper -> async { trySuspend { refreshScript(scraper) }.getOrNull() } }.awaitAll()
             }
         }
         FrSettings.saveNuvioLastUpdate(System.currentTimeMillis())
@@ -660,12 +660,12 @@ object NuvioClient {
                     val (pS, pE) = if (isAnimeScraper) absoluteTarget else tmdbTarget
                     val (fS, fE) = if (isAnimeScraper) tmdbTarget else absoluteTarget
 
-                    var ok = runCatching {
+                    var ok = trySuspend {
                         runScraper(scraper, tmdbId, mediaType, pS, pE, payload, callback)
                     }.getOrDefault(false)
 
                     if (!ok && (pS to pE) != (fS to fE)) {
-                        ok = runCatching {
+                        ok = trySuspend {
                             runScraper(scraper, tmdbId, mediaType, fS, fE, payload, callback)
                         }.getOrDefault(false)
                     }
@@ -1259,7 +1259,7 @@ object NuvioClient {
                 cachedHit.second?.let { return it }
                 continue
             }
-            val found = runCatching {
+            val found = trySuspend {
                 TmdbCatalog.searchBest(title, year, payload.titles)?.let { item ->
                     val id = item.id.id.toIntOrNull()
                     if (id != null) {
@@ -1370,6 +1370,13 @@ object NuvioClient {
 
     /** Code interne : le lien répond par une page HTML (popup/pub) et non par une vidéo. */
     private const val HTML_POPUP_STATUS = 490
+
+    /**
+     * Pendant le diagnostic uniquement : quand l'utilisateur choisit de tolérer
+     * les pages HTML/popup, elles sont comptées comme des résultats valides.
+     */
+    @Volatile
+    internal var diagTolerateHtmlPopup: Boolean = false
 
     private data class StreamProbe(val status: Int, val body: String?, val contentType: String?)
 
@@ -1492,7 +1499,7 @@ object NuvioClient {
      * Les corps binaires (mp4, ts, mkv…) ne sont jamais confondus avec du HTML.
      */
     private fun isPopupBody(body: String?, contentType: String?): Boolean {
-        if (!FrSettings.verifyStreamContent) return false
+        if (!FrSettings.verifyStreamContent || diagTolerateHtmlPopup) return false
         val ct = contentType.orEmpty().lowercase()
         if (ct.contains("text/html")) return true
         val mediaLike = ct.contains("json") ||
@@ -1515,7 +1522,10 @@ object NuvioClient {
             sample.contains("adsterra")
     }
 
-    private fun isDeniedStatus(status: Int): Boolean = status in setOf(401, 403, 404, 410, 429, 451)
+    private fun isDeniedStatus(status: Int): Boolean {
+        if (status == 403 && FrSettings.tolerate403) return false
+        return status in setOf(401, 403, 404, 410, 429, 451)
+    }
 
     private fun recordProbe(url: String, status: Int) {
         currentScraper.get()?.let { id ->
@@ -1712,7 +1722,7 @@ object NuvioClient {
      * réel. Les sites movies/tv sont testés sur Fight Club (TMDB 550).
      */
     suspend fun testProvider(id: String): String {
-        val scraper = runCatching { scrapers().firstOrNull { it.id == id } }.getOrNull()
+        val scraper = trySuspend { scrapers().firstOrNull { it.id == id } }.getOrNull()
             ?: return "✗ source introuvable"
         val types = scraper.supportedTypes.map { it.lowercase() }
         val animeLike = id in ANIME_FOCUSED_IDS ||
@@ -1768,7 +1778,7 @@ object NuvioClient {
             // sur un réseau mobile, 26 moteurs Rhino simultanés saturaient tout
             // et chaque scrapeur dépassait son timeout. Sémaphore dédié (2 max) :
             // tests doux ET jamais bloquants pour la lecture réelle.
-            val ok = runCatching {
+            val ok = trySuspend {
                 testSemaphore.withPermit {
                     withTimeoutOrNull(150_000L) {
                         runScraper(scraper, tc.tmdbId, tc.type, tc.season, tc.episode, tc.payload) { links += it }

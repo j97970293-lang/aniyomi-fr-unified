@@ -98,12 +98,12 @@ object StremioClient {
         val data = decodeHosterPayload(hoster.internalData) ?: return@coroutineScope emptyList()
         val subtitles = async {
             withTimeoutOrNull(3_000L) {
-                runCatching { subtitles(data.payload) }.getOrDefault(emptyList())
+                trySuspend { subtitles(data.payload) }.getOrDefault(emptyList())
             }.orEmpty()
         }
         val videos = data.targets.map { target ->
             async {
-                runCatching {
+                trySuspend {
                     withTimeoutOrNull(STREAM_TIMEOUT_MS) {
                         streamsFrom(data.addon, target.type, target.id, data.payload, data.addonName)
                     }.orEmpty()
@@ -127,7 +127,7 @@ object StremioClient {
         val jobs = addons.flatMap { addon ->
             addon.targets.map { target ->
                 async {
-                    runCatching {
+                    trySuspend {
                         withTimeoutOrNull(STREAM_TIMEOUT_MS) {
                             streamsFrom(addon.base, target.type, target.id, payload, addon.name)
                         }.orEmpty()
@@ -140,7 +140,7 @@ object StremioClient {
                     val target = targets.firstOrNull()
                     target?.let {
                         async {
-                            runCatching {
+                            trySuspend {
                                 withTimeoutOrNull(STREAM_TIMEOUT_MS) {
                                     inlineMetaStreams(addon, it.type, payload.stremioMetaId ?: it.id, payload)
                                 }.orEmpty()
@@ -313,7 +313,7 @@ object StremioClient {
             .distinct()
             .filter { it == FrSettings.DEFAULT_SUBTITLE_ADDON || FrSettings.isStremioEnabled(it) }
         addons.map { addon ->
-            async { runCatching { subtitlesFrom(addon, type, id) }.getOrDefault(emptyList()) }
+            async { trySuspend { subtitlesFrom(addon, type, id) }.getOrDefault(emptyList()) }
         }.awaitAll().flatten().distinctBy { "${it.lang}|${it.url}" }
     }
 

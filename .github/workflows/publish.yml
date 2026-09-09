@@ -41,8 +41,28 @@ jobs:
           KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          set -o pipefail
           chmod +x gradlew
-          ./gradlew :src:fr:frunified:spotlessCheck :src:fr:frunified:assembleRelease
+          ./gradlew :src:fr:frunified:spotlessCheck :src:fr:frunified:assembleRelease 2>&1 | tee /tmp/build.log | tail -n 80
+
+      - name: Commit build log on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -x
+          tail -n 300 /tmp/build.log > .publish-log.txt
+          B64=$(base64 -w0 .publish-log.txt)
+          printf '{"content":"%s","encoding":"base64"}' "$B64" > /tmp/blob.json
+          BLOB_SHA=$(gh api repos/$GITHUB_REPOSITORY/git/blobs -X POST --input /tmp/blob.json --jq .sha)
+          printf '{"tree":[{"path":".publish-log.txt","mode":"100644","sha":"%s"}]}' "$BLOB_SHA" > /tmp/tree.json
+          TREE_SHA=$(gh api repos/$GITHUB_REPOSITORY/git/trees -X POST --input /tmp/tree.json --jq .sha)
+          printf '{"message":"Publish build log %s","tree":"%s"}' "$GITHUB_SHA" "$TREE_SHA" > /tmp/commit.json
+          COMMIT_SHA=$(gh api repos/$GITHUB_REPOSITORY/git/commits -X POST --input /tmp/commit.json --jq .sha)
+          printf '{"ref":"refs/heads/publish-debug","sha":"%s","force":true}' "$COMMIT_SHA" > /tmp/ref.json
+          gh api repos/$GITHUB_REPOSITORY/git/refs/heads/publish-debug -X PUT --input /tmp/ref.json \
+            || gh api repos/$GITHUB_REPOSITORY/git/refs -X POST -f ref=refs/heads/publish-debug -f sha="$COMMIT_SHA"
+          echo "LOG_COMMIT=$COMMIT_SHA"
 
       - name: Create extension repository
         run: |

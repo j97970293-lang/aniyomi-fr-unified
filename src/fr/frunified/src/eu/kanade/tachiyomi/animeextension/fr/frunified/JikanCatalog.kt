@@ -11,7 +11,7 @@ object JikanCatalog {
     private val episodeCountCache = ConcurrentHashMap<String, Pair<Long, Int>>()
 
     private suspend fun fetch(path: String): JSONObject? =
-        runCatching { FrRuntime.getJson("$API/$path") }.getOrNull()
+        trySuspend { FrRuntime.getJson("$API/$path") }.getOrNull()
 
     fun item(json: JSONObject): CatalogItem? {
         val id = json.optInt("mal_id").takeIf { it > 0 } ?: return null
@@ -126,17 +126,17 @@ object AnimeCatalog {
             else -> "POPULARITY_DESC"
         }
         val aniList = if (FrSettings.useAniListCatalog) {
-            runCatching { AniListCatalog.row(sort, page) }.getOrDefault(emptyList())
+            trySuspend { AniListCatalog.row(sort, page) }.getOrDefault(emptyList())
         } else {
             emptyList()
         }
         val jikan = if (aniList.isEmpty() && FrSettings.useJikanCatalog) {
-            runCatching { JikanCatalog.row(kind, page) }.getOrDefault(emptyList())
+            trySuspend { JikanCatalog.row(kind, page) }.getOrDefault(emptyList())
         } else {
             aniList
         }
         return if (jikan.isEmpty() && FrSettings.useTmdbCatalog) {
-            runCatching { TmdbCatalog.animeRow(kind, page) }.getOrDefault(emptyList())
+            trySuspend { TmdbCatalog.animeRow(kind, page) }.getOrDefault(emptyList())
         } else {
             jikan
         }
@@ -149,19 +149,19 @@ object AnimeCatalog {
      */
     suspend fun search(query: String, page: Int, quick: Boolean = false): List<CatalogItem> {
         val aniList = if (FrSettings.useAniListCatalog) {
-            runCatching { AniListCatalog.search(query, page) }.getOrDefault(emptyList())
+            trySuspend { AniListCatalog.search(query, page) }.getOrDefault(emptyList())
         } else {
             emptyList()
         }
         if (quick && FrSettings.useAniListCatalog) return aniList
         val jikan = if (aniList.isEmpty() && FrSettings.useJikanCatalog) {
-            runCatching { JikanCatalog.search(query, page) }.getOrDefault(emptyList())
+            trySuspend { JikanCatalog.search(query, page) }.getOrDefault(emptyList())
         } else {
             aniList
         }
         if (quick) return jikan
         return if (jikan.isEmpty() && FrSettings.useTmdbCatalog) {
-            runCatching { TmdbCatalog.animeSearch(query, page) }.getOrDefault(emptyList())
+            trySuspend { TmdbCatalog.animeSearch(query, page) }.getOrDefault(emptyList())
         } else {
             jikan
         }

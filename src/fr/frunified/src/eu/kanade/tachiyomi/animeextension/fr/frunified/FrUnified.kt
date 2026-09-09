@@ -8,11 +8,14 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.res.TypedValue
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
@@ -241,15 +244,15 @@ class FrUnified : Source() {
         NuvioClient.init(context)
         settingsScope.launch {
             // Mise à jour quotidienne des manifests et catalogues Stremio.
-            runCatching { StremioCatalog.autoUpdateIfDue() }
+            trySuspend { StremioCatalog.autoUpdateIfDue() }
         }
         settingsScope.launch {
             // Restauration distante optionnelle, HTTPS et au plus quotidienne.
-            runCatching { SettingsBackup.autoRestoreIfDue(preferences) }
+            trySuspend { SettingsBackup.autoRestoreIfDue(preferences) }
         }
         settingsScope.launch {
             // Mise à jour automatique (au plus quotidienne) des dépôts et scripts Nuvio.
-            runCatching { NuvioClient.autoUpdateIfDue() }
+            trySuspend { NuvioClient.autoUpdateIfDue() }
         }
     }
 
@@ -454,7 +457,7 @@ class FrUnified : Source() {
             chunked(6).flatMap { batch ->
                 batch.map { item ->
                     async {
-                        runCatching { splitSeasonEntries(item) }.getOrDefault(listOf(item))
+                        trySuspend { splitSeasonEntries(item) }.getOrDefault(listOf(item))
                     }
                 }.awaitAll().flatten()
             }
@@ -905,7 +908,7 @@ class FrUnified : Source() {
         val rows = numbers.chunked(6).flatMap { batch ->
             batch.map { number ->
                 async {
-                    runCatching { tmdbSeasonRows(id, titles, item, imdb, number, mergedLabels = true) }
+                    trySuspend { tmdbSeasonRows(id, titles, item, imdb, number, mergedLabels = true) }
                         .getOrDefault(emptyList())
                 }
             }.awaitAll().flatten()
@@ -1225,12 +1228,12 @@ class FrUnified : Source() {
                 emptyList()
             } else {
                 val found = java.util.concurrent.CopyOnWriteArrayList<Video>()
-                runCatching { NuvioClient.streams(payload) { found += it } }
+                trySuspend { NuvioClient.streams(payload) { found += it } }
                 found.toList()
             }
         }
         val stremioJob = async {
-            runCatching { StremioClient.hosters(payload) }.getOrDefault(emptyList())
+            trySuspend { StremioClient.hosters(payload) }.getOrDefault(emptyList())
         }
         val nuvioVideos = nuvioJob.await()
         val stremioHosters = stremioJob.await()
@@ -1239,7 +1242,7 @@ class FrUnified : Source() {
         } else {
             // Les sous-titres ne doivent jamais faire expirer les URL signées.
             withTimeoutOrNull(3_000L) {
-                runCatching { StremioClient.subtitles(payload) }.getOrDefault(emptyList())
+                trySuspend { StremioClient.subtitles(payload) }.getOrDefault(emptyList())
             }.orEmpty()
         }
         val nuvioHosters = videosToHosters(nuvioVideos, tracks, StreamLabel.ENGINE_NUVIO)
@@ -1284,7 +1287,7 @@ class FrUnified : Source() {
     override suspend fun getVideoList(hoster: Hoster): List<Video> {
         val videos = if (StremioClient.isLazyHoster(hoster)) {
             // Stremio sonde déjà chaque flux au chargement du serveur.
-            runCatching { StremioClient.streams(hoster) }.getOrDefault(emptyList())
+            trySuspend { StremioClient.streams(hoster) }.getOrDefault(emptyList())
         } else {
             // Nuvio : les URL signées et les popups peuvent avoir changé depuis le listage.
             NuvioClient.reverify(hoster.videoList.orEmpty())
@@ -1695,27 +1698,47 @@ class FrUnified : Source() {
             L10n.t("✏️ Personnalisé…", "✏️ Custom…"),
         )
         val values = arrayOf("1.1.1.1", "8.8.8.8", "9.9.9.9", "94.140.14.14", "", null)
-        AlertDialog.Builder(dialogContext)
+        val density = dialogContext.resources.displayMetrics.density
+        val padding = (density * 12).toInt()
+        val container = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
+        val picker = ListPicker(dialogContext).build(
+            labels.toList(),
+            multi = false,
+            checked = BooleanArray(labels.size),
+        )
+        container.addView(picker.listContainer)
+        val dialog = AlertDialog.Builder(dialogContext)
             .setTitle(L10n.t("Choisir le DNS", "Choose the DNS"))
-            .setItems(labels) { _, index ->
-                val value = values[index]
-                if (value == null) {
-                    showDnsSettingsPopup(dialogContext)
-                } else {
-                    preferences.edit().putString(FrSettings.KEY_DNS_HOSTS, value).commit()
-                    FrDns.clearCache()
-                    displayToast(
-                        if (value.isBlank()) {
-                            L10n.t("DNS du téléphone activé", "Phone DNS enabled")
-                        } else {
-                            L10n.t("DNS activé : $value", "DNS enabled: $value")
-                        },
-                    )
-                }
-            }
+            .setView(
+                ScrollView(dialogContext).apply {
+                    addView(container)
+                },
+            )
             .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
-            .show()
+            .create()
+        picker.onSingle = { index ->
+            val value = values[index]
+            if (value == null) {
+                showDnsSettingsPopup(dialogContext)
+            } else {
+                preferences.edit().putString(FrSettings.KEY_DNS_HOSTS, value).commit()
+                FrDns.clearCache()
+                displayToast(
+                    if (value.isBlank()) {
+                        L10n.t("DNS du téléphone activé", "Phone DNS enabled")
+                    } else {
+                        L10n.t("DNS activé : $value", "DNS enabled: $value")
+                    },
+                )
+            }
+        }
+        runCatching { dialog.show() }
     }
+
+
 
     /** Popup « Réglages DNS avancés » : champ personnalisé + test de résolution. */
     private fun showDnsSettingsPopup(dialogContext: Context) {
@@ -1836,9 +1859,17 @@ class FrUnified : Source() {
         val values = FrSettings.CATALOG_LANGUAGE_LABELS.keys.toList()
         val labels = FrSettings.CATALOG_LANGUAGE_LABELS.map { (code, label) ->
             FrSettings.flagLabel(code, label)
-        }.toTypedArray()
+        }
         val checked = BooleanArray(values.size) { values[it] in FrSettings.catalogLanguages }
-        AlertDialog.Builder(dialogContext)
+        val density = dialogContext.resources.displayMetrics.density
+        val padding = (density * 12).toInt()
+        val container = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
+        val picker = ListPicker(dialogContext).build(labels, multi = true, checked = checked)
+        container.addView(picker.listContainer)
+        val dialog = AlertDialog.Builder(dialogContext)
             .setTitle(L10n.t("Langues des catalogues", "Catalog languages"))
             .setMessage(
                 L10n.t(
@@ -1846,10 +1877,14 @@ class FrUnified : Source() {
                     "The first checked language is the primary one (TMDB entries).",
                 ),
             )
-            .setMultiChoiceItems(labels, checked) { _, index, value -> checked[index] = value }
+            .setView(
+                ScrollView(dialogContext).apply {
+                    addView(container)
+                },
+            )
             .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
             .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
-                val selected = values.indices.filter { checked[it] }.map { values[it] }
+                val selected = values.indices.filter { picker.isChecked(it) }.map { values[it] }
                     .ifEmpty { listOf(FrSettings.catalogLanguage) }
                 val primary = FrSettings.catalogLanguage.takeIf { it in selected } ?: selected.first()
                 preferences.edit()
@@ -1863,24 +1898,19 @@ class FrUnified : Source() {
                     ),
                 )
             }
-            .show()
+            .create()
+        runCatching { dialog.show() }
     }
 
+
+
+    /** Popup « Catalogues » : les quatre catalogues en cases à cocher (remplace les quatre interrupteurs). */
     /** Popup « Catalogues » : les quatre catalogues en cases à cocher (remplace les quatre interrupteurs). */
     private fun showCatalogsPopup(dialogContext: Context) {
         val rows = listOf(
-            FrSettings.KEY_USE_TMDB to L10n.t(
-                "TMDB — films et séries",
-                "TMDB — movies and series",
-            ),
-            FrSettings.KEY_USE_ANIME to L10n.t(
-                "AniList — animés",
-                "AniList — anime",
-            ),
-            FrSettings.KEY_USE_JIKAN to L10n.t(
-                "Jikan / MyAnimeList — animés",
-                "Jikan / MyAnimeList — anime",
-            ),
+            FrSettings.KEY_USE_TMDB to L10n.t("TMDB — films et séries", "TMDB — movies and series"),
+            FrSettings.KEY_USE_ANIME to L10n.t("AniList — animés", "AniList — anime"),
+            FrSettings.KEY_USE_JIKAN to L10n.t("Jikan / MyAnimeList — animés", "Jikan / MyAnimeList — anime"),
             FrSettings.KEY_USE_STREMIO_CATALOG to L10n.t("Catalogue Stremio", "Stremio catalog"),
         )
         val checks = BooleanArray(rows.size) {
@@ -1891,22 +1921,35 @@ class FrUnified : Source() {
                 else -> FrSettings.useStremioCatalog
             }
         }
-        AlertDialog.Builder(dialogContext)
+        val density = dialogContext.resources.displayMetrics.density
+        val padding = (density * 12).toInt()
+        val container = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
+        val picker = ListPicker(dialogContext).build(rows.map { it.second }, multi = true, checked = checks)
+        container.addView(picker.listContainer)
+        val dialog = AlertDialog.Builder(dialogContext)
             .setTitle(L10n.t("Catalogues", "Catalogs"))
-            .setMultiChoiceItems(rows.map { it.second }.toTypedArray(), checks) { _, index, value ->
-                checks[index] = value
-            }
+            .setView(
+                ScrollView(dialogContext).apply {
+                    addView(container)
+                },
+            )
             .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
             .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
                 preferences.edit()
-                    .putBoolean(FrSettings.KEY_USE_TMDB, checks[0])
-                    .putBoolean(FrSettings.KEY_USE_ANIME, checks[1])
-                    .putBoolean(FrSettings.KEY_USE_JIKAN, checks[2])
-                    .putBoolean(FrSettings.KEY_USE_STREMIO_CATALOG, checks[3])
+                    .putBoolean(FrSettings.KEY_USE_TMDB, picker.isChecked(0))
+                    .putBoolean(FrSettings.KEY_USE_ANIME, picker.isChecked(1))
+                    .putBoolean(FrSettings.KEY_USE_JIKAN, picker.isChecked(2))
+                    .putBoolean(FrSettings.KEY_USE_STREMIO_CATALOG, picker.isChecked(3))
                     .apply()
             }
-            .show()
+            .create()
+        runCatching { dialog.show() }
     }
+
+
 
     /** Popup « Langues des sous-titres » : codes séparés par des virgules. */
     private fun showSubtitleLangsPopup(dialogContext: Context) {
@@ -1961,21 +2004,195 @@ class FrUnified : Source() {
                     setPadding(0, (density * 10).toInt(), 0, (density * 4).toInt())
                 },
             )
-            group.orientation = RadioGroup.HORIZONTAL
+            // Pile verticale : les libellés longs (« 4 — rapide ») ne débordent plus
+            // de la ligne et restent entièrement lisibles.
+            group.orientation = RadioGroup.VERTICAL
             options.forEach { (value, label) ->
                 val button = RadioButton(dialogContext).apply {
                     text = label
                     id = View.generateViewId()
                     isChecked = value == current
+                    textSize = 14f
+                    setPadding(0, (density * 4).toInt(), 0, (density * 4).toInt())
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
                 }
                 valueById[button.id] = value
                 group.addView(button)
             }
+            group.layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            )
             container.addView(group)
         }
 
         val value: String
             get() = valueById[group.checkedRadioButtonId].orEmpty()
+    }
+
+    /**
+     * Liste de dialogues rendue par l'extension (cases à cocher / boutons radio /
+     * action par ligne) avec dimensions et couleurs de texte explicites : les listes
+     * natives d'AlertDialog s'affichaient vides sous le thème de l'application hôte.
+     */
+    private class ListPicker(private val dialogContext: Context) {
+        private val density = dialogContext.resources.displayMetrics.density
+        private val textColor: Int = run {
+            val tv = TypedValue()
+            dialogContext.theme.resolveAttribute(android.R.attr.textColorPrimary, tv, true)
+            tv.data
+        }
+        val listContainer: LinearLayout = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            )
+        }
+        private var multi = false
+        private var fullLabels: List<String> = emptyList()
+        private var visible = listOf<Int>()
+        private var masterChecked = BooleanArray(0)
+        private var selected = -1
+        private var rows = mutableListOf<Row>()
+        var onToggle: ((Int, Boolean) -> Unit)? = null
+        var onSingle: ((Int) -> Unit)? = null
+        var onLongClick: ((Int) -> Boolean)? = null
+        var rowAction: ((Int) -> Unit)? = null
+        var rowActionVisible: ((Int) -> Unit)? = null
+
+        private class Row(
+            val sourceIndex: Int,
+            val indicator: View,
+            val text: TextView,
+            val rowView: LinearLayout,
+        )
+
+        fun build(
+            items: List<String>,
+            multi: Boolean,
+            checked: BooleanArray,
+            selected: Int = -1,
+        ) {
+            this.multi = multi
+            this.fullLabels = items
+            this.masterChecked = checked.copyOf()
+            this.selected = selected
+            visible = items.indices.toList()
+            render()
+        }
+
+        /** Applique un filtre de recherche sur les libellés (état conservé). */
+        fun filter(query: String) {
+            val q = query.trim().lowercase()
+            visible = if (q.isEmpty()) fullLabels.indices.toList() else fullLabels.indices
+                .filter { fullLabels[it].lowercase().contains(q) }
+            render()
+        }
+
+        fun setAll(value: Boolean) {
+            masterChecked = BooleanArray(fullLabels.size) { value }
+            render()
+        }
+
+        fun setMany(predicate: (Int) -> Boolean) {
+            masterChecked = BooleanArray(fullLabels.size) { predicate(it) }
+            render()
+        }
+
+        fun isChecked(index: Int): Boolean = masterChecked.getOrNull(index) ?: false
+
+        val selectedIndex: Int
+            get() = selected
+
+        private fun render() {
+            listContainer.removeAllViews()
+            rows = visible.map { index ->
+                val rowView = LinearLayout(dialogContext).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    isClickable = true
+                    isFocusable = true
+                    setPadding(0, (density * 8).toInt(), 0, (density * 8).toInt())
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
+                }
+                val indicator: View
+                if (multi) {
+                    indicator = CheckBox(dialogContext).apply {
+                        isChecked = masterChecked[index]
+                        isClickable = false
+                        isFocusable = false
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                        )
+                        setPadding(0, 0, (density * 8).toInt(), 0)
+                    }
+                } else {
+                    indicator = RadioButton(dialogContext).apply {
+                        isChecked = index == selected
+                        isClickable = false
+                        isFocusable = false
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                        )
+                        setPadding(0, 0, (density * 8).toInt(), 0)
+                    }
+                }
+                val text = TextView(dialogContext).apply {
+                    this.text = fullLabels[index]
+                    textSize = 14f
+                    setTextColor(textColor)
+                    maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                rowView.addView(indicator)
+                rowView.addView(text)
+                if (rowAction != null && rowActionVisible?.invoke(index) == true) {
+                    rowView.addView(
+                        Button(dialogContext).apply {
+                            text = "⚙️"
+                            contentDescription = fullLabels[index]
+                            textSize = 14f
+                            minWidth = 0
+                            minHeight = 0
+                            background = null
+                            setPadding((density * 10).toInt(), 0, 0, 0)
+                            layoutParams = LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                            )
+                            setOnClickListener { rowAction?.invoke(index) }
+                        },
+                    )
+                }
+                rowView.setOnClickListener {
+                    if (multi) {
+                        val nowChecked = !masterChecked[index]
+                        masterChecked[index] = nowChecked
+                        (indicator as CheckBox).isChecked = nowChecked
+                        onToggle?.invoke(index, nowChecked)
+                    } else {
+                        selected = index
+                        render()
+                        onSingle?.invoke(index)
+                    }
+                }
+                rowView.setOnLongClickListener {
+                    onLongClick?.invoke(index) ?: false
+                }
+                Row(index, indicator, text, rowView)
+            }.toMutableList()
+            rows.forEach { row -> listContainer.addView(row.rowView) }
+        }
     }
 
     /**
@@ -2031,6 +2248,30 @@ class FrUnified : Source() {
             isChecked = FrSettings.nuvioAutoUpdate
         }
         container.addView(autoUpdateCheck)
+        val tolerate403Check = CheckBox(dialogContext).apply {
+            text = L10n.t(
+                "Garder les liens 403 (CDN stricts : Movix, FSVid)",
+                "Keep 403 links (strict CDNs: Movix, FSVid)",
+            )
+            isChecked = FrSettings.tolerate403
+        }
+        container.addView(tolerate403Check)
+        val orderCaption = TextView(dialogContext).apply {
+            text = L10n.t(
+                "Ordre des sources (texte, cas avancé)",
+                "Source order (text, advanced)",
+            )
+            textSize = 13f
+            setPadding(0, (density * 10).toInt(), 0, (density * 4).toInt())
+        }
+        container.addView(orderCaption)
+        val orderEdit = EditText(dialogContext).apply {
+            setText(FrSettings.nuvioOrder.joinToString("\n"))
+            hint = L10n.t("un nom de source par ligne", "one source name per line")
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 3
+        }
+        container.addView(orderEdit)
         val updateNow = Button(dialogContext).apply {
             text = L10n.t("Mettre à jour les sources maintenant", "Update the sources now")
             setOnClickListener { runNuvioUpdate(dialogContext) }
@@ -2050,6 +2291,13 @@ class FrUnified : Source() {
                     .putString(FrSettings.KEY_NUVIO_MAX, maxPerSite.value)
                     .putBoolean(FrSettings.KEY_VERIFY_STREAM_CONTENT, verifyCheck.isChecked)
                     .putBoolean(FrSettings.KEY_NUVIO_AUTO_UPDATE, autoUpdateCheck.isChecked)
+                    .putBoolean(FrSettings.KEY_NUVIO_TOLERATE_403, tolerate403Check.isChecked)
+                    .putString(
+                        FrSettings.KEY_NUVIO_ORDER,
+                        orderEdit.text.toString().lineSequence()
+                            .map(String::trim).filter(String::isNotBlank)
+                            .distinctBy(String::lowercase).joinToString("\n"),
+                    )
                     .apply()
                 displayToast(
                     L10n.t(
@@ -2067,12 +2315,15 @@ class FrUnified : Source() {
      * le manifest. Une source dont une clé obligatoire est vide n'est pas exécutée
      * (signalée « à configurer » dans le diagnostic et le sélecteur).
      */
-    private fun showSourceConfigPopup(dialogContext: Context) {
+    private fun showSourceConfigPopup(dialogContext: Context, preselect: String? = null) {
         displayToast(L10n.t("Chargement des sources…", "Loading sources…"))
         settingsScope.launch {
-            val scrapers = runCatching { NuvioClient.scrapers(includeDisabled = true) }
+            val scrapers = trySuspend { NuvioClient.scrapers(includeDisabled = true) }
                 .getOrDefault(emptyList())
                 .filter { it.envDefaults.isNotEmpty() || it.requiredEnv.isNotEmpty() }
+                .let { list ->
+                    if (preselect == null) list else list.filter { it.id.equals(preselect, true) }
+                }
             handler.post {
                 if (scrapers.isEmpty()) {
                     AlertDialog.Builder(dialogContext)
@@ -2120,7 +2371,16 @@ class FrUnified : Source() {
                     fields[scraper.id] = perScraper
                 }
                 AlertDialog.Builder(dialogContext)
-                    .setTitle(L10n.t("Configurer les sources", "Configure the sources"))
+                    .setTitle(
+                        if (scrapers.size == 1) {
+                            L10n.t(
+                                "Configurer « ${scrapers.first().name} »",
+                                "Configure « ${scrapers.first().name} »",
+                            )
+                        } else {
+                            L10n.t("Configurer les sources", "Configure the sources")
+                        },
+                    )
                     .setView(
                         ScrollView(dialogContext).apply {
                             addView(container)
@@ -2276,7 +2536,7 @@ class FrUnified : Source() {
     private fun showNuvioPicker(dialogContext: Context) {
         displayToast(L10n.t("Chargement des sources Nuvio…", "Loading Nuvio sources…"))
         settingsScope.launch {
-            val nuvioResult = runCatching { NuvioClient.scrapers(includeDisabled = true) }
+            val nuvioResult = trySuspend { NuvioClient.scrapers(includeDisabled = true) }
             val diagnostics = NuvioClient.diagnostics()
             val all = nuvioResult.getOrDefault(emptyList())
             val choices = all.map { scraper ->
@@ -2318,80 +2578,34 @@ class FrUnified : Source() {
                     )
                     return@post
                 }
-                val checked = BooleanArray(choices.size) { choices[it].enabled }
                 var wildcardMode = FrSettings.nuvioEnabled.any { it.equals("all", true) }
-                val dialog = AlertDialog.Builder(dialogContext)
-                    .setTitle(
-                        L10n.t(
-                            "Nuvio (${checked.count { it }}/${choices.size} actives)",
-                            "Nuvio (${checked.count { it }}/${choices.size} active)",
-                        ),
+                val density = dialogContext.resources.displayMetrics.density
+                val padding = (density * 12).toInt()
+                val container = LinearLayout(dialogContext).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(padding, padding, padding, padding)
+                }
+                // Zone de recherche en haut de liste : les sources se filtrent au
+                // clavier à mesure que l'on tape (utile avec centaine de sources).
+                val search = EditText(dialogContext).apply {
+                    hint = L10n.t("Rechercher une source…", "Search a source…")
+                    inputType = InputType.TYPE_CLASS_TEXT
+                    setPadding(0, 0, 0, (density * 8).toInt())
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
                     )
-                    .setMessage(
-                        L10n.t(
-                            "Appuyez longuement pour supprimer le dépôt entier.",
-                            "Long-press to remove the whole repository.",
-                        ),
-                    )
-                    .setMultiChoiceItems(
-                        choices.map(SourceChoice::label).toTypedArray(),
-                        checked,
-                    ) { _, index, value -> checked[index] = value }
-                    .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
-                    .setNeutralButton(L10n.t("Conseillées", "Recommended"), null)
-                    .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
-                        val visible = choices.map { it.value.lowercase() }.toSet()
-                        val enabled = if (wildcardMode) {
-                            val oldHiddenExclusions = FrSettings.nuvioEnabled
-                                .filter { it.startsWith('!') && it.removePrefix("!").lowercase() !in visible }
-                            listOf("all") +
-                                oldHiddenExclusions +
-                                choices.indices.filter { !checked[it] }.map { "!${choices[it].value}" }
-                        } else {
-                            val oldHiddenExplicit = FrSettings.nuvioEnabled.filter { value ->
-                                value != "all" && !value.startsWith('!') && value.lowercase() !in visible
-                            }
-                            oldHiddenExplicit + choices.indices.filter { checked[it] }.map { choices[it].value }
-                        }
-                        val checkedIds = choices.indices.filter { checked[it] }.map { choices[it].value }
-                        val selectedOrder = FrSettings.nuvioOrder.mapNotNull { ordered ->
-                            checkedIds.firstOrNull { it.equals(ordered, true) }
-                        } +
-                            checkedIds
-                        preferences.edit()
-                            .putString(
-                                FrSettings.KEY_NUVIO_ENABLED,
-                                enabled.distinctBy(String::lowercase).joinToString("\n"),
-                            )
-                            .putString(
-                                FrSettings.KEY_NUVIO_ORDER,
-                                (selectedOrder + FrSettings.nuvioOrder)
-                                    .distinctBy(String::lowercase)
-                                    .joinToString("\n"),
-                            )
-                            .apply()
-                        displayToast(
-                            L10n.t(
-                                "Nuvio : ${checked.count { it }} source(s) active(s)",
-                                "Nuvio: ${checked.count { it }} active source(s)",
-                            ),
-                        )
-                    }
-                    .create()
-                dialog.setOnShowListener {
-                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                        wildcardMode = false
-                        choices.indices.forEach { index ->
-                            checked[index] = FrSettings.RECOMMENDED_NUVIO_IDS.any {
-                                it.equals(choices[index].value, true)
-                            }
-                            dialog.listView.setItemChecked(index, checked[index])
-                        }
-                    }
-                    // Suppression d'un dépôt : toutes les sources qui en viennent disparaissent.
-                    dialog.listView.setOnItemLongClickListener { _, _, position, _ ->
-                        val repo = reposByScraper[choices[position].value.lowercase()]
-                        if (repo.isNullOrBlank()) return@setOnItemLongClickListener false
+                }
+                val picker = ListPicker(dialogContext).build(
+                    choices.map(SourceChoice::label),
+                    multi = true,
+                    checked = BooleanArray(choices.size) { choices[it].enabled },
+                )
+                picker.onLongClick = { position ->
+                    val repo = reposByScraper[choices[position].value.lowercase()]
+                    if (repo.isNullOrBlank()) {
+                        false
+                    } else {
                         val removedCount = choices.count { choice ->
                             reposByScraper[choice.value.lowercase()] == repo
                         }
@@ -2421,6 +2635,97 @@ class FrUnified : Source() {
                         true
                     }
                 }
+                // Configuration des variables d'environnement directement depuis
+                // la source (bouton ⚙️), sans quitter le sélecteur.
+                picker.rowAction = { position -> showSourceConfigPopup(dialogContext, choices[position].value) }
+                picker.rowActionVisible = { position ->
+                    val scraper = all.firstOrNull { it.id.equals(choices[position].value, true) }
+                    scraper != null && (scraper.envDefaults.isNotEmpty() || scraper.requiredEnv.isNotEmpty())
+                }
+                search.addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) {}
+                    override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) {}
+                    override fun afterTextChanged(text: Editable?) {
+                        picker.filter(text?.toString().orEmpty())
+                    }
+                })
+                container.addView(picker.listContainer)
+                val activeCount = choices.count { it.enabled }
+                val dialog = AlertDialog.Builder(dialogContext)
+                    .setTitle(
+                        L10n.t(
+                            "Nuvio ($activeCount/${choices.size} actives)",
+                            "Nuvio ($activeCount/${choices.size} active)",
+                        ),
+                    )
+                    .setMessage(
+                        L10n.t(
+                            "Recherchez une source ; appuyez longuement pour supprimer son dépôt.",
+                            "Search a source; long-press to remove its repository.",
+                        ),
+                    )
+                    .setView(
+                        LinearLayout(dialogContext).apply {
+                            orientation = LinearLayout.VERTICAL
+                            setPadding(padding, padding, 0, 0)
+                            addView(search)
+                            addView(
+                                ScrollView(dialogContext).apply {
+                                    addView(container)
+                                },
+                            )
+                        },
+                    )
+                    .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+                    .setNeutralButton(L10n.t("Conseillées", "Recommended"), null)
+                    .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
+                        val visible = choices.map { it.value.lowercase() }.toSet()
+                        val enabled = if (wildcardMode) {
+                            val oldHiddenExclusions = FrSettings.nuvioEnabled
+                                .filter { it.startsWith('!') && it.removePrefix("!").lowercase() !in visible }
+                            listOf("all") +
+                                oldHiddenExclusions +
+                                choices.indices.filter { !picker.isChecked(it) }.map { "!${choices[it].value}" }
+                        } else {
+                            val oldHiddenExplicit = FrSettings.nuvioEnabled.filter { value ->
+                                value != "all" && !value.startsWith('!') && value.lowercase() !in visible
+                            }
+                            oldHiddenExplicit +
+                                choices.indices.filter { picker.isChecked(it) }.map { choices[it].value }
+                        }
+                        val checkedIds = choices.indices.filter { picker.isChecked(it) }.map { choices[it].value }
+                        val selectedOrder = FrSettings.nuvioOrder.mapNotNull { ordered ->
+                            checkedIds.firstOrNull { it.equals(ordered, true) }
+                        } +
+                            checkedIds
+                        preferences.edit()
+                            .putString(
+                                FrSettings.KEY_NUVIO_ENABLED,
+                                enabled.distinctBy(String::lowercase).joinToString("\n"),
+                            )
+                            .putString(
+                                FrSettings.KEY_NUVIO_ORDER,
+                                (selectedOrder + FrSettings.nuvioOrder)
+                                    .distinctBy(String::lowercase)
+                                    .joinToString("\n"),
+                            )
+                            .apply()
+                        displayToast(
+                            L10n.t(
+                                "Nuvio : ${checkedIds.size} source(s) active(s)",
+                                "Nuvio: ${checkedIds.size} active source(s)",
+                            ),
+                        )
+                    }
+                    .create()
+                dialog.setOnShowListener {
+                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                        wildcardMode = false
+                        picker.setMany { index ->
+                            FrSettings.RECOMMENDED_NUVIO_IDS.any { it.equals(choices[index].value, true) }
+                        }
+                    }
+                }
                 runCatching { dialog.show() }
                     .onFailure {
                         displayToast(
@@ -2435,13 +2740,20 @@ class FrUnified : Source() {
         }
     }
 
+    /** Couleur de texte principale du thème en cours (listes et dialogues). */
+    private fun Context.dialogTextColor(): Int = run {
+        val tv = TypedValue()
+        theme.resolveAttribute(android.R.attr.textColorPrimary, tv, true)
+        tv.data
+    }
+
     private fun showNuvioOrderDialog(dialogContext: Context) {
         displayToast(L10n.t("Chargement des sources…", "Loading sources…"))
         settingsScope.launch {
             // includeDisabled = true : le classement ne doit jamais s'ouvrir sur
             // une liste vide tant qu'un dépôt est lisible (les sources désactivées
             // restent visibles et classables, signalées « désactivée »).
-            val result = runCatching { NuvioClient.scrapers(includeDisabled = true) }
+            val result = trySuspend { NuvioClient.scrapers(includeDisabled = true) }
             val scrapers = result.getOrDefault(emptyList())
             val failure = result.exceptionOrNull()
             handler.post {
@@ -2533,9 +2845,13 @@ class FrUnified : Source() {
                 isEnabled = enabled
                 alpha = if (enabled) 1.0f else 0.3f
                 textSize = 14f
-                minWidth = 0
+                minWidth = (density * 38).toInt()
                 minHeight = 0
                 background = null
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                )
                 val hPad = (density * 6).toInt()
                 val vPad = (density * 4).toInt()
                 setPadding(hPad, vPad, hPad, vPad)
@@ -2559,6 +2875,7 @@ class FrUnified : Source() {
                 val nameView = TextView(dialogContext).apply {
                     text = labelText
                     textSize = 14f
+                    setTextColor(dialogContext.dialogTextColor())
                     maxLines = 2
                     ellipsize = TextUtils.TruncateAt.END
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -2566,6 +2883,7 @@ class FrUnified : Source() {
                 val repoView = TextView(dialogContext).apply {
                     text = "    " + NuvioClient.repoLabel(scraper.repoBase)
                     textSize = 12f
+                    setTextColor(dialogContext.dialogTextColor())
                     alpha = 0.7f
                     maxLines = 1
                     ellipsize = TextUtils.TruncateAt.END
@@ -2586,6 +2904,10 @@ class FrUnified : Source() {
                 val row = LinearLayout(dialogContext).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
                     val rowVPad = (density * 4).toInt()
                     setPadding(0, rowVPad, 0, rowVPad)
                     addView(textColumn)
@@ -2661,9 +2983,13 @@ class FrUnified : Source() {
                 isEnabled = enabled
                 alpha = if (enabled) 1.0f else 0.3f
                 textSize = 14f
-                minWidth = 0
+                minWidth = (density * 38).toInt()
                 minHeight = 0
                 background = null
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                )
                 val hPad = (density * 6).toInt()
                 val vPad = (density * 4).toInt()
                 setPadding(hPad, vPad, hPad, vPad)
@@ -2694,6 +3020,7 @@ class FrUnified : Source() {
                 val textView = TextView(dialogContext).apply {
                     text = labelText
                     textSize = 14f
+                    setTextColor(dialogContext.dialogTextColor())
                     maxLines = 2
                     ellipsize = TextUtils.TruncateAt.END
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -2707,6 +3034,10 @@ class FrUnified : Source() {
                 val row = LinearLayout(dialogContext).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
                     val rowVPad = (density * 4).toInt()
                     setPadding(0, rowVPad, 0, rowVPad)
                     addView(textView)
@@ -2795,7 +3126,6 @@ class FrUnified : Source() {
                     .map { code ->
                         "${FrSettings.flagLabel(code, code.uppercase())} — $code"
                     }
-                    .toTypedArray()
                 if (options.isEmpty()) {
                     displayToast(
                         L10n.t(
@@ -2805,25 +3135,41 @@ class FrUnified : Source() {
                     )
                     return@setOnClickListener
                 }
-                AlertDialog.Builder(dialogContext)
+                val containerAdd = LinearLayout(dialogContext).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(padding, padding, padding, padding)
+                }
+                val pickerAdd = ListPicker(dialogContext).build(
+                    options.toList(),
+                    multi = false,
+                    checked = BooleanArray(options.size),
+                )
+                containerAdd.addView(pickerAdd.listContainer)
+                val dialogAdd = AlertDialog.Builder(dialogContext)
                     .setTitle(L10n.t("Ajouter une langue au classement", "Add a language to the ranking"))
-                    .setItems(options) { dialog, which ->
-                        val code = FrSettings.ADDABLE_STREAM_LANGUAGES
-                            .filterNot { existing ->
-                                ordered.any { it.equals(existing.uppercase(), true) }
-                            }[which]
-                        val token = code.uppercase()
-                        if (token !in ordered) ordered.add(token)
-                        val customs = (FrSettings.customLanguages + token).distinct()
-                        preferences.edit()
-                            .putString(FrSettings.KEY_STREAM_LANGUAGES, customs.joinToString("\n"))
-                            .putString(FrSettings.KEY_STREAM_ORDER, ordered.joinToString("\n"))
-                            .commit()
-                        render()
-                        dialog.dismiss()
-                    }
+                    .setView(
+                        ScrollView(dialogContext).apply {
+                            addView(containerAdd)
+                        },
+                    )
                     .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
-                    .show()
+                    .create()
+                pickerAdd.onSingle = { which ->
+                    val code = FrSettings.ADDABLE_STREAM_LANGUAGES
+                        .filterNot { existing ->
+                            ordered.any { it.equals(existing.uppercase(), true) }
+                        }[which]
+                    val token = code.uppercase()
+                    if (token !in ordered) ordered.add(token)
+                    val customs = (FrSettings.customLanguages + token).distinct()
+                    preferences.edit()
+                        .putString(FrSettings.KEY_STREAM_LANGUAGES, customs.joinToString("\n"))
+                        .putString(FrSettings.KEY_STREAM_ORDER, ordered.joinToString("\n"))
+                        .commit()
+                    render()
+                    dialogAdd.dismiss()
+                }
+                runCatching { dialogAdd.show() }
             }
         }
         container.addView(addQuality)
@@ -2870,7 +3216,15 @@ class FrUnified : Source() {
             L10n.t("Partager (choisir une app ou un dossier)", "Share (choose an app or a folder)"),
             L10n.t("Enregistrer dans le dossier Téléchargements", "Save to the Downloads folder"),
         )
-        AlertDialog.Builder(dialogContext)
+        val density = dialogContext.resources.displayMetrics.density
+        val padding = (density * 12).toInt()
+        val container = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
+        val picker = ListPicker(dialogContext).build(items.toList(), multi = false, checked = BooleanArray(items.size))
+        container.addView(picker.listContainer)
+        val dialog = AlertDialog.Builder(dialogContext)
             .setTitle(L10n.t("Créer une sauvegarde", "Create a backup"))
             .setMessage(
                 L10n.t(
@@ -2878,15 +3232,24 @@ class FrUnified : Source() {
                     "${preferences.all.size} settings ready to export.",
                 ),
             )
-            .setItems(items) { _, which ->
-                when (which) {
-                    0 -> copyBackupToClipboard(dialogContext, json)
-                    1 -> shareBackup(dialogContext, json)
-                    2 -> settingsScope.launch { saveBackupToFile(dialogContext, json) }
-                }
+            .setView(
+                ScrollView(dialogContext).apply {
+                    addView(container)
+                },
+            )
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .create()
+        picker.onSingle = { which ->
+            when (which) {
+                0 -> copyBackupToClipboard(dialogContext, json)
+                1 -> shareBackup(dialogContext, json)
+                2 -> settingsScope.launch { saveBackupToFile(dialogContext, json) }
             }
-            .show()
+        }
+        runCatching { dialog.show() }
     }
+
+
 
     private fun copyBackupToClipboard(dialogContext: Context, json: String) {
         val clipboard = dialogContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -2994,29 +3357,46 @@ class FrUnified : Source() {
             add(L10n.t("Coller le JSON", "Paste the JSON"))
             add(L10n.t("Lien HTTPS (synchronisation)", "HTTPS link (sync)"))
         }
-        AlertDialog.Builder(dialogContext)
+        val density = dialogContext.resources.displayMetrics.density
+        val padding = (density * 12).toInt()
+        val container = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
+        val picker = ListPicker(dialogContext).build(items, multi = false, checked = BooleanArray(items.size))
+        container.addView(picker.listContainer)
+        val dialog = AlertDialog.Builder(dialogContext)
             .setTitle(L10n.t("Restaurer une sauvegarde", "Restore a backup"))
-            .setItems(items.toTypedArray()) { _, which ->
-                when (which) {
-                    0 -> if (files.isEmpty()) {
-                        displayToast(
-                            L10n.t(
-                                "Aucun fichier de sauvegarde trouvé dans Téléchargements",
-                                "No backup file found in Downloads",
-                            ),
-                            Toast.LENGTH_LONG,
-                        )
-                    } else {
-                        pickBackupFile(dialogContext, files)
-                    }
-
-                    1 -> showBackupPasteDialog(dialogContext)
-
-                    2 -> showBackupSyncPopup(dialogContext)
+            .setView(
+                ScrollView(dialogContext).apply {
+                    addView(container)
+                },
+            )
+            .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+            .create()
+        picker.onSingle = { which ->
+            when (which) {
+                0 -> if (files.isEmpty()) {
+                    displayToast(
+                        L10n.t(
+                            "Aucun fichier de sauvegarde trouvé dans Téléchargements",
+                            "No backup file found in Downloads",
+                        ),
+                        Toast.LENGTH_LONG,
+                    )
+                } else {
+                    pickBackupFile(dialogContext, files)
                 }
+
+                1 -> showBackupPasteDialog(dialogContext)
+
+                2 -> showBackupSyncPopup(dialogContext)
             }
-            .show()
+        }
+        runCatching { dialog.show() }
     }
+
+
 
     private data class BackupFileEntry(val name: String, val uri: Uri)
 
@@ -3069,31 +3449,51 @@ class FrUnified : Source() {
     }.getOrDefault(emptyList())
 
     private fun pickBackupFile(dialogContext: Context, files: List<BackupFileEntry>) {
-        AlertDialog.Builder(dialogContext)
+        val density = dialogContext.resources.displayMetrics.density
+        val padding = (density * 12).toInt()
+        val container = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
+        val picker = ListPicker(dialogContext).build(
+            files.map(BackupFileEntry::name),
+            multi = false,
+            checked = BooleanArray(files.size),
+        )
+        container.addView(picker.listContainer)
+        val dialog = AlertDialog.Builder(dialogContext)
             .setTitle(L10n.t("Choisir un fichier de sauvegarde", "Choose a backup file"))
-            .setItems(files.map(BackupFileEntry::name).toTypedArray()) { _, which ->
-                val entry = files[which]
-                val result = runCatching {
-                    dialogContext.contentResolver.openInputStream(entry.uri)
-                        ?.use { it.readBytes().toString(Charsets.UTF_8) }
-                        ?: error("read")
-                }
-                result.fold(
-                    { raw -> applyBackup(dialogContext, raw) },
-                    {
-                        displayToast(
-                            L10n.t(
-                                "Impossible de lire le fichier : ${it.message?.take(80) ?: ""}",
-                                "Cannot read the file: ${it.message?.take(80) ?: ""}",
-                            ),
-                            Toast.LENGTH_LONG,
-                        )
-                    },
-                )
-            }
+            .setView(
+                ScrollView(dialogContext).apply {
+                    addView(container)
+                },
+            )
             .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
-            .show()
+            .create()
+        picker.onSingle = { which ->
+            val entry = files[which]
+            val result = runCatching {
+                dialogContext.contentResolver.openInputStream(entry.uri)
+                    ?.use { it.readBytes().toString(Charsets.UTF_8) }
+                    ?: error("read")
+            }
+            result.fold(
+                { raw -> applyBackup(dialogContext, raw) },
+                {
+                    displayToast(
+                        L10n.t(
+                            "Impossible de lire le fichier : ${it.message?.take(80) ?: ""}",
+                            "Cannot read the file: ${it.message?.take(80) ?: ""}",
+                        ),
+                        Toast.LENGTH_LONG,
+                    )
+                },
+            )
+        }
+        runCatching { dialog.show() }
     }
+
+
 
     private fun showBackupPasteDialog(dialogContext: Context) {
         val input = EditText(dialogContext).apply {
@@ -3202,7 +3602,7 @@ class FrUnified : Source() {
                     Toast.LENGTH_LONG,
                 )
                 settingsScope.launch {
-                    val result = runCatching { SettingsBackup.restore(preferences, FrRuntime.getText(url)) }
+                    val result = trySuspend { SettingsBackup.restore(preferences, FrRuntime.getText(url)) }
                     handler.post {
                         displayToast(
                             result.fold(
@@ -3247,7 +3647,7 @@ class FrUnified : Source() {
     private fun runStremioUpdate(dialogContext: Context) {
         displayToast(L10n.t("Mise à jour Stremio en cours…", "Updating Stremio…"), Toast.LENGTH_LONG)
         settingsScope.launch {
-            val report = runCatching { StremioCatalog.updateAddons() }
+            val report = trySuspend { StremioCatalog.updateAddons() }
             handler.post {
                 AlertDialog.Builder(dialogContext)
                     .setTitle(
@@ -3275,7 +3675,7 @@ class FrUnified : Source() {
             Toast.LENGTH_LONG,
         )
         settingsScope.launch {
-            val report = runCatching { NuvioClient.updateSources() }
+            val report = trySuspend { NuvioClient.updateSources() }
             handler.post {
                 AlertDialog.Builder(dialogContext)
                     .setTitle(
@@ -3297,15 +3697,87 @@ class FrUnified : Source() {
     }
 
     private fun showNuvioDiagnostic(dialogContext: Context) {
+        settingsScope.launch {
+            val all = trySuspend { NuvioClient.scrapers(includeDisabled = true) }.getOrDefault(emptyList())
+            val activeCount = all.count { FrSettings.isNuvioEnabled(it.id) }
+            handler.post {
+                val density = dialogContext.resources.displayMetrics.density
+                val padding = (density * 12).toInt()
+                val container = LinearLayout(dialogContext).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(padding, padding, padding, padding)
+                }
+                val countOptions = listOf(
+                    "5" to L10n.t("5 sources (rapide)", "5 sources (fast)"),
+                    "20" to L10n.t("20 sources", "20 sources"),
+                    "0" to L10n.t(
+                        "Toutes les ${activeCount} sources actives",
+                        "All ${activeCount} active sources",
+                    ),
+                )
+                val countPicker = ListPicker(dialogContext).build(
+                    countOptions.map { it.second },
+                    multi = false,
+                    checked = BooleanArray(countOptions.size) { it == 0 },
+                    selected = 0,
+                )
+                val tolerate = CheckBox(dialogContext).apply {
+                    text = L10n.t(
+                        "Tolérer les pages HTML/popup (comptées comme OK)",
+                        "Tolerate HTML/popup pages (counted as OK)",
+                    )
+                    setPadding(0, (density * 8).toInt(), 0, (density * 8).toInt())
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
+                }
+                val run = Button(dialogContext).apply {
+                    text = L10n.t("Lancer le diagnostic", "Run the diagnostics")
+                    setOnClickListener {
+                        runNuvioDiagnostic(
+                            dialogContext,
+                            countOptions[countPicker.selectedIndex].first,
+                            tolerate.isChecked,
+                        )
+                    }
+                }
+                container.addView(countPicker.listContainer)
+                container.addView(tolerate)
+                container.addView(run)
+                AlertDialog.Builder(dialogContext)
+                    .setTitle(L10n.t("Diagnostic des sources", "Source diagnostics"))
+                    .setMessage(
+                        L10n.t(
+                            "Chaque source testée interroge un vrai titre. Le nombre de sources " +
+                                "testées et la tolérance des popups se choisissent ici.",
+                            "Each tested source queries a real title. The number of tested sources " +
+                                "and popup tolerance are chosen here.",
+                        ),
+                    )
+                    .setView(
+                        ScrollView(dialogContext).apply {
+                            addView(container)
+                        },
+                    )
+                    .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+                    .show()
+            }
+        }
+    }
+
+    private fun runNuvioDiagnostic(dialogContext: Context, countToken: String, tolerateHtml: Boolean) {
+        val count = countToken.toIntOrNull() ?: 5
         displayToast(
             L10n.t(
-                "Diagnostic Nuvio réel en cours (jusqu’à cinq sources)…",
-                "Real Nuvio diagnostics running (up to five sources)…",
+                "Diagnostic Nuvio réel en cours (${if (count == 0) "toutes" else count} sources)…",
+                "Real Nuvio diagnostics running (${if (count == 0) "all" else count} sources)…",
             ),
             Toast.LENGTH_LONG,
         )
         settingsScope.launch {
-            val report = runCatching {
+            NuvioClient.diagTolerateHtmlPopup = tolerateHtml
+            val report = trySuspend {
                 val engine = NuvioClient.engineStatus()
                 val all = NuvioClient.scrapers(includeDisabled = true)
                 val active = all.filter { FrSettings.isNuvioEnabled(it.id) }
@@ -3315,9 +3787,13 @@ class FrUnified : Source() {
                                 .let { index -> if (index < 0) Int.MAX_VALUE else index }
                         }.thenBy { it.name.lowercase() },
                     )
-                val tested = active.take(5)
-                val checks = tested.map { scraper ->
-                    scraper to runCatching { NuvioClient.testProvider(scraper.id) }
+                val tested = if (count == 0) active else active.take(count)
+                // Tests en parallèle : le sémaphore de NuvioClient limite déjà le
+                // nombre de moteurs Rhino simultanés (2 max), rien à saturer.
+                val checks = coroutineScope {
+                    tested.map { scraper ->
+                        async { scraper to trySuspend { NuvioClient.testProvider(scraper.id) } }
+                    }.awaitAll()
                 }
                 val repoSummary = FrSettings.nuvioRepos.joinToString(", ") { NuvioClient.repoLabel(it) }
                 buildString {
@@ -3331,6 +3807,14 @@ class FrUnified : Source() {
                     )
                     appendLine(L10n.t("Scrapeurs détectés : ${all.size}", "Scrapers detected: ${all.size}"))
                     appendLine(L10n.t("Scrapeurs actifs : ${active.size}", "Active scrapers: ${active.size}"))
+                    appendLine(
+                        L10n.t(
+                            "Sources testées : ${tested.size}" +
+                                (if (tolerateHtml) " (HTML/popup tolérés)" else ""),
+                            "Sources tested: ${tested.size}" +
+                                (if (tolerateHtml) " (HTML/popup tolerated)" else ""),
+                        ),
+                    )
                     if (checks.isEmpty()) {
                         appendLine()
                         append(L10n.t("Aucune source active à tester.", "No active source to test."))
@@ -3346,6 +3830,7 @@ class FrUnified : Source() {
                     }
                 }.trim()
             }
+            NuvioClient.diagTolerateHtmlPopup = false
             handler.post {
                 AlertDialog.Builder(dialogContext)
                     .setTitle(
@@ -3372,9 +3857,9 @@ class FrUnified : Source() {
     private fun showStremioCatalogPicker(dialogContext: Context) {
         displayToast(L10n.t("Chargement des catalogues Stremio…", "Loading Stremio catalogs…"))
         settingsScope.launch {
-            val result = runCatching { StremioCatalog.catalogs() }
+            val result = trySuspend { StremioCatalog.catalogs() }
             val catalogs = result.getOrDefault(emptyList())
-            val selected = runCatching { StremioCatalog.selectedCatalog() }.getOrNull()
+            val selected = trySuspend { StremioCatalog.selectedCatalog() }.getOrNull()
             handler.post {
                 if (catalogs.isEmpty()) {
                     displayToast(
@@ -3392,22 +3877,38 @@ class FrUnified : Source() {
                     return@post
                 }
                 val selectedIndex = catalogs.indexOfFirst { it.key == selected?.key }.coerceAtLeast(0)
-                AlertDialog.Builder(dialogContext)
+                val density = dialogContext.resources.displayMetrics.density
+                val padding = (density * 12).toInt()
+                val container = LinearLayout(dialogContext).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(padding, padding, padding, padding)
+                }
+                val picker = ListPicker(dialogContext).build(
+                    catalogs.map(StremioCatalog.Catalog::label),
+                    multi = false,
+                    checked = BooleanArray(catalogs.size) { it == selectedIndex },
+                    selected = selectedIndex,
+                )
+                container.addView(picker.listContainer)
+                val dialog = AlertDialog.Builder(dialogContext)
                     .setTitle(L10n.t("Catalogue Stremio (${catalogs.size})", "Stremio catalog (${catalogs.size})"))
-                    .setSingleChoiceItems(
-                        catalogs.map(StremioCatalog.Catalog::label).toTypedArray(),
-                        selectedIndex,
-                    ) { dialog, index ->
-                        preferences.edit()
-                            .putString(FrSettings.KEY_STREMIO_CATALOG, catalogs[index].key)
-                            .apply()
-                        displayToast(
-                            L10n.t("Catalogue : ${catalogs[index].label}", "Catalog: ${catalogs[index].label}"),
-                        )
-                        dialog.dismiss()
-                    }
+                    .setView(
+                        ScrollView(dialogContext).apply {
+                            addView(container)
+                        },
+                    )
                     .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
-                    .show()
+                    .create()
+                picker.onSingle = { index ->
+                    preferences.edit()
+                        .putString(FrSettings.KEY_STREMIO_CATALOG, catalogs[index].key)
+                        .apply()
+                    displayToast(
+                        L10n.t("Catalogue : ${catalogs[index].label}", "Catalog: ${catalogs[index].label}"),
+                    )
+                    dialog.dismiss()
+                }
+                runCatching { dialog.show() }
             }
         }
     }
@@ -3432,12 +3933,52 @@ class FrUnified : Source() {
             )
             return
         }
-        val checked = BooleanArray(choices.size) { choices[it].enabled }
+        val density = dialogContext.resources.displayMetrics.density
+        val padding = (density * 12).toInt()
+        val container = LinearLayout(dialogContext).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
+        val picker = ListPicker(dialogContext).build(
+            choices.map(SourceChoice::label),
+            multi = true,
+            checked = BooleanArray(choices.size) { choices[it].enabled },
+        )
+        picker.onLongClick = { position ->
+            // Suppression d'un addon : retiré de la liste ET désactivé (les addons
+            // par défaut ne doivent pas ressusciter via la fusion des valeurs).
+            val addon = choices[position].value
+            AlertDialog.Builder(dialogContext)
+                .setTitle(L10n.t("Supprimer l'addon", "Remove the addon"))
+                .setMessage(
+                    L10n.t(
+                        "Supprimer « ${addon.substringAfter("://").removeSuffix("/manifest.json")} » ?",
+                        "Remove « ${addon.substringAfter("://").removeSuffix("/manifest.json")} »?",
+                    ),
+                )
+                .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
+                .setPositiveButton(L10n.t("Supprimer", "Remove")) { _, _ ->
+                    val remaining = FrSettings.stremioUrls.filter { it != addon }
+                    val disabled = FrSettings.stremioDisabled + addon
+                    preferences.edit()
+                        .putString(FrSettings.KEY_STREMIO, remaining.joinToString("\n"))
+                        .putString(FrSettings.KEY_STREMIO_DISABLED, disabled.distinct().joinToString("\n"))
+                        .apply()
+                    displayToast(
+                        L10n.t("Addon supprimé", "Addon removed"),
+                        Toast.LENGTH_LONG,
+                    )
+                }
+                .show()
+            true
+        }
+        container.addView(picker.listContainer)
+        val activeCount = choices.count { it.enabled }
         val dialog = AlertDialog.Builder(dialogContext)
             .setTitle(
                 L10n.t(
-                    "Stremio (${checked.count { it }}/${choices.size} actifs)",
-                    "Stremio (${checked.count { it }}/${choices.size} active)",
+                    "Stremio ($activeCount/${choices.size} actifs)",
+                    "Stremio ($activeCount/${choices.size} active)",
                 ),
             )
             .setMessage(
@@ -3446,61 +3987,32 @@ class FrUnified : Source() {
                     "Long-press to remove an addon.",
                 ),
             )
-            .setMultiChoiceItems(
-                choices.map(SourceChoice::label).toTypedArray(),
-                checked,
-            ) { _, index, value -> checked[index] = value }
+            .setView(
+                ScrollView(dialogContext).apply {
+                    addView(container)
+                },
+            )
             .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
             .setNeutralButton(L10n.t("Tout activer", "Enable all"), null)
             .setPositiveButton(L10n.t("Enregistrer", "Save")) { _, _ ->
                 val visible = choices.map(SourceChoice::value).toSet()
                 val disabled = FrSettings.stremioDisabled.filterNot(visible::contains) +
-                    choices.indices.filter { !checked[it] }.map { choices[it].value }
+                    choices.indices.filter { !picker.isChecked(it) }.map { choices[it].value }
                 preferences.edit()
                     .putString(FrSettings.KEY_STREMIO_DISABLED, disabled.distinct().joinToString("\n"))
                     .apply()
+                val activeNow = choices.indices.count { picker.isChecked(it) }
                 displayToast(
                     L10n.t(
-                        "Stremio : ${checked.count { it }} addon(s) actif(s)",
-                        "Stremio: ${checked.count { it }} active addon(s)",
+                        "Stremio : $activeNow addon(s) actif(s)",
+                        "Stremio: $activeNow active addon(s)",
                     ),
                 )
             }
             .create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                checked.indices.forEach { index ->
-                    checked[index] = true
-                    dialog.listView.setItemChecked(index, true)
-                }
-            }
-            // Suppression d'un addon : retiré de la liste ET désactivé (les addons
-            // par défaut ne doivent pas ressusciter via la fusion des valeurs).
-            dialog.listView.setOnItemLongClickListener { _, _, position, _ ->
-                val addon = choices[position].value
-                AlertDialog.Builder(dialogContext)
-                    .setTitle(L10n.t("Supprimer l'addon", "Remove the addon"))
-                    .setMessage(
-                        L10n.t(
-                            "Supprimer « ${addon.substringAfter("://").removeSuffix("/manifest.json")} » ?",
-                            "Remove « ${addon.substringAfter("://").removeSuffix("/manifest.json")} »?",
-                        ),
-                    )
-                    .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
-                    .setPositiveButton(L10n.t("Supprimer", "Remove")) { _, _ ->
-                        val remaining = FrSettings.stremioUrls.filter { it != addon }
-                        val disabled = FrSettings.stremioDisabled + addon
-                        preferences.edit()
-                            .putString(FrSettings.KEY_STREMIO, remaining.joinToString("\n"))
-                            .putString(FrSettings.KEY_STREMIO_DISABLED, disabled.distinct().joinToString("\n"))
-                            .apply()
-                        displayToast(
-                            L10n.t("Addon supprimé", "Addon removed"),
-                            Toast.LENGTH_LONG,
-                        )
-                    }
-                    .show()
-                true
+                picker.setAll(true)
             }
         }
         runCatching { dialog.show() }
@@ -3514,7 +4026,6 @@ class FrUnified : Source() {
                 )
             }
     }
-
     private fun showExternalSourceDialog(
         dialogContext: Context,
         expectedKind: ExternalSourceImporter.Kind,

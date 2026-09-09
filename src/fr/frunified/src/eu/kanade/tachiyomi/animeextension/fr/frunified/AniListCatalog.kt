@@ -28,7 +28,7 @@ object AniListCatalog {
             put("query", query)
             put("variables", JSONObject(variables))
         }.toString()
-        return runCatching { FrRuntime.postJson(ENDPOINT, body) }.getOrNull()
+        return trySuspend { FrRuntime.postJson(ENDPOINT, body) }.getOrNull()
     }
 
     fun item(media: JSONObject): CatalogItem? {

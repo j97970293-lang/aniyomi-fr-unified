@@ -75,7 +75,7 @@ La langue d’un site n’est plus une condition d’exécution : elle participe
 
 ### Configuration des sources (clés API, jetons…)
 
-Certaines sources de dépôts tiers demandent leurs propres variables d’environnement (clé API, jeton, domaine). Quand un manifest les déclare (`env` / `requiredEnv`), le dialogue **Configurer les sources** les liste avec leurs valeurs par défaut ; les valeurs saisies sont injectées dans `process.env` avant chaque exécution. Une source dont une clé obligatoire est vide n’est pas lancée et est signalée « ⚙️ à configurer » dans le sélecteur et le diagnostic. Les clés API génériques (communes à toutes les sources) restent dans **Paramètres avancés**.
+Certaines sources de dépôts tiers demandent leurs propres variables d’environnement (clé API, jeton, domaine). Quand un manifest les déclare (`env` / `requiredEnv`), le bouton **⚙️** sur la ligne de la source dans le sélecteur — ou l’action **Configurer les sources** — ouvre les champs avec leurs valeurs par défaut ; les valeurs saisies sont injectées dans `process.env` avant chaque exécution. Une source dont une clé obligatoire est vide n’est pas lancée et est signalée « ⚙️ à configurer » dans le sélecteur et le diagnostic. Les clés API génériques (communes à toutes les sources) restent dans **Paramètres avancés**.
 
 ### Dépôt All-in-One-Nuvio optionnel
 
@@ -155,7 +155,7 @@ La section **Sauvegarde** ne demande plus de lien :
 
 ## Diagnostic
 
-Le diagnostic Nuvio teste le chemin réel Kotlin → Rhino → réseau. **Tous les sites activés sont interrogés jusqu’au bout, en parallèle** : il n’y a plus de mode de recherche ni d’arrêt quand une VF est trouvée, chaque site renvoie tous ses liens (bornés par « flux maximum par site », illimité par défaut). Au clic, les liens Nuvio sont revérifiés. Les hosters des deux moteurs restent disponibles dans l’ordre choisi. Un addon Stremio lent est abandonné après 15 secondes sans bloquer la liste.
+Le diagnostic Nuvio teste le chemin réel Kotlin → Rhino → réseau. On choisit d’abord combien de sources actives tester (**5**, **20** ou **toutes**) et si l’on veut **tolérer les pages HTML/popup** (comptées comme OK) : les sources testées partent en parallèle (le moteur Rhino reste limité à 2 moteurs simultanés). Dans la recherche réelle, **tous les sites activés sont interrogés jusqu’au bout, en parallèle** : il n’y a plus de mode de recherche ni d’arrêt quand une VF est trouvée, chaque site renvoie tous ses liens (bornés par « flux maximum par site », illimité par défaut). Au clic, les liens Nuvio sont revérifiés ; par défaut, un lien refusé en 403 (CDN strict : Movix, FSVid) est conservé, ce qui se règle dans **Options de recherche des sources**. Les hosters des deux moteurs restent disponibles dans l’ordre choisi. Un addon Stremio lent est abandonné après 15 secondes sans bloquer la liste.
 
 ## Compilation locale
 
