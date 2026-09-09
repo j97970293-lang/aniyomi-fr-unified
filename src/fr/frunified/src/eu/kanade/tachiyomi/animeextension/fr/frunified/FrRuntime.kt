@@ -19,6 +19,7 @@ internal suspend fun <T> trySuspend(block: suspend () -> T): Result<T> = try {
 } catch (e: Throwable) {
     Result.failure(e)
 }
+
 /**
  * Accès réseau commun aux catalogues.
  *

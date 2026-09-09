@@ -15,8 +15,8 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.text.Editable
 import android.text.InputType
-import android.text.TextWatcher
 import android.text.TextUtils
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -2081,8 +2081,12 @@ class FrUnified : Source() {
         /** Applique un filtre de recherche sur les libellés (état conservé). */
         fun filter(query: String) {
             val q = query.trim().lowercase()
-            visible = if (q.isEmpty()) fullLabels.indices.toList() else fullLabels.indices
-                .filter { fullLabels[it].lowercase().contains(q) }
+            visible = if (q.isEmpty()) {
+                fullLabels.indices.toList()
+            } else {
+                fullLabels.indices
+                    .filter { fullLabels[it].lowercase().contains(q) }
+            }
             render()
         }
 
@@ -3698,8 +3702,8 @@ class FrUnified : Source() {
                     "5" to L10n.t("5 sources (rapide)", "5 sources (fast)"),
                     "20" to L10n.t("20 sources", "20 sources"),
                     "0" to L10n.t(
-                        "Toutes les ${activeCount} sources actives",
-                        "All ${activeCount} active sources",
+                        "Toutes les $activeCount sources actives",
+                        "All $activeCount active sources",
                     ),
                 )
                 val countPicker = ListPicker(dialogContext).build(
