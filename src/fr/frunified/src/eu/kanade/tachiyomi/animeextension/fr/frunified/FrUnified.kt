@@ -2049,7 +2049,7 @@ class FrUnified : Source() {
         var onSingle: ((Int) -> Unit)? = null
         var onLongClick: ((Int) -> Boolean)? = null
         var rowAction: ((Int) -> Unit)? = null
-        var rowActionVisible: ((Int) -> Unit)? = null
+        var rowActionVisible: ((Int) -> Boolean)? = null
 
         private class Row(
             val sourceIndex: Int,
