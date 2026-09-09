@@ -6,7 +6,7 @@ import org.json.JSONObject
 /** Préférences partagées par les catalogues, Stremio et le moteur Nuvio. */
 object FrSettings {
     const val KEY_SETTINGS_VERSION = "fr_unified_settings_version"
-    const val SETTINGS_VERSION = 10
+    const val SETTINGS_VERSION = 11
 
     /** Langue de l'interface de l'extension (français par défaut, anglais en option). */
     const val KEY_UI_LANGUAGE = "ui_language"
@@ -29,6 +29,9 @@ object FrSettings {
     const val KEY_USE_STREMIO_CATALOG = "use_stremio_catalog"
     const val KEY_STREMIO_CATALOG = "stremio_catalog"
     const val KEY_STREMIO_CATALOG_CACHE = "stremio_catalog_cache_v5"
+
+    /** Valeur spéciale du catalogue Stremio : interroge tous les catalogues actifs à la fois. */
+    const val STREMIO_CATALOG_ALL = "all"
     const val KEY_ENGINE_ORDER = "resolver_engine_order"
     const val KEY_STREMIO_MAX = "stremio_max_streams"
     const val KEY_STREMIO_AUTO_UPDATE = "stremio_auto_update"
@@ -171,11 +174,11 @@ object FrSettings {
 
     /**
      * Une installation neuve active tous les providers des dépôts par défaut, français ou
-     * non : aucune langue ne bloque l'exécution d'un site. Les entrées préfixées par `!` sont
-     * des exclusions de sécurité ; Movix reste proposé dans le sélecteur mais son flux
-     * actuellement refusé en HTTP 403 ne doit pas être actif d'office.
+     * non : aucune langue ne bloque l'exécution d'un site, comme dans l'application NuviO.
+     * Les entrées préfixées par `!` sont des exclusions ; Movix reste actif par défaut
+     * (ses liens 403 sont conservés, réglable dans « Options de recherche des sources »).
      */
-    const val DEFAULT_NUVIO_ENABLED = "all\n!movix"
+    const val DEFAULT_NUVIO_ENABLED = "all"
 
     val GOWARU_NUVIO_IDS = setOf(
         "anime-ultime",

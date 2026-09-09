@@ -399,6 +399,22 @@ object StremioCatalog {
         catalogKey: String = FrSettings.stremioCatalogKey,
         selectedExtras: Map<String, String> = emptyMap(),
     ): List<CatalogItem> = coroutineScope {
+        // « Tout » : tous les catalogues actifs sont interrogés en parallèle et les
+        // résultats fusionnés (l'utilisateur ne peut pas chercher catalogue par catalogue).
+        if (catalogKey.equals(FrSettings.STREMIO_CATALOG_ALL, true)) {
+            val everything = catalogs()
+            val allTargets = if (query.isBlank()) {
+                everything
+            } else {
+                everything.filter(Catalog::supportsSearch).take(12)
+            }
+            if (allTargets.isEmpty()) return@coroutineScope emptyList()
+            return@coroutineScope allTargets.map { catalog ->
+                async {
+                    trySuspend { requestCatalog(catalog, page, query, selectedExtras) }.getOrDefault(emptyList())
+                }
+            }.awaitAll().flatten().distinctBy { it.id.serialize() }
+        }
         val selected = selectedCatalog(catalogKey) ?: return@coroutineScope emptyList()
         val all = catalogs()
         val targets = if (query.isBlank()) {

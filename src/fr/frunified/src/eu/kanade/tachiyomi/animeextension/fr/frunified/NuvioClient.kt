@@ -280,8 +280,15 @@ object NuvioClient {
             if (!cached.isNullOrBlank()) return cached
         }
         val code = fetchScript(scraper)?.second
-        if (code != null) runCatching { file?.writeText(code) }
-        return code
+        if (!code.isNullOrBlank()) {
+            runCatching { file?.writeText(code) }
+            return code
+        }
+        // Échec du téléchargement : on utilise le dernier script mis en cache, même s'il
+        // est ancien. Les sources restent fonctionnelles quand le dépôt est hors ligne,
+        // au lieu de disparaître (les scripts ne changent que rarement).
+        val stale = file?.takeIf { it.exists() && it.length() > 0L }
+        return stale?.let { runCatching { it.readText() }.getOrNull() }
     }
 
     /**

@@ -1,5 +1,16 @@
 # Historique des versions
 
+## 16.16 — 9 septembre 2026
+
+- **tous les sites Nuvio sont interrogés, comme dans NuviO** : les installations qui conservaient une ancienne liste de 6 sources « conseillées » passent automatiquement à « tout » (migration des réglages v11) ; le sélecteur Nuvio a maintenant un bouton **« Tout activer »** en un geste ;
+- **flux illimités par défaut dans Nuvio** comme dans Stremio : l'ancienne limite (2/4/8/12) est convertie en « Illimité » par la migration, et « Illimité » est désormais la première option des deux menus ;
+- **catalogue Stremio « Tout »** : une entrée « ⚡ Tout (tous les catalogues) » en tête des rangées Stremio cherche dans TOUS les catalogues actifs en parallèle — plus besoin d'ouvrir chaque catalogue séparément ;
+- **suppression d'un dépôt Nuvio** : nouvelle action « Supprimer un dépôt Nuvio » qui liste les dépôts avec leur nombre de sources ; supprimer un dépôt retire d'un seul geste toutes ses sources (comme la suppression d'un addon Stremio) ;
+- **ordre des flux en texte** : l'ancien classement à flèches (instable) est remplacé par une simple liste « un critère par ligne » (VF, VOSTFR, 1080p, 4K, EN…) avec bouton « Ordre conseillé » ; une langue nouvelle saisie est ajoutée au classement ;
+- **classement des sources Nuvio à flèches supprimé** : l'ordre des sources reste réglable en texte dans « Options de recherche des sources » ;
+- **sauvegarde où on veut** : « Partager » envoie la sauvegarde en VRAI fichier JSON (enregistrable dans n'importe quel dossier via l'application Fichiers, Drive, …) ; la restauration cherche les fichiers de sauvegarde dans TOUT le stockage partagé, plus seulement dans Téléchargements ;
+- **sources robustes hors ligne** : si le téléchargement d'un script échoue, le dernier script mis en cache (même ancien) est utilisé — les sources ne disparaissent plus quand un dépôt est momentanément inaccessible.
+
 ## 16.15 — 9 septembre 2026
 
 - même contenu que la 16.14 corrigée (les 12 corrections d'interface sont incluses), publiée sous un nouveau numéro de version afin que l'application propose automatiquement la mise à jour aux utilisateurs déjà passés en 16.14 ;
