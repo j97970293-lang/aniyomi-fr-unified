@@ -1,5 +1,10 @@
 # Historique des versions
 
+## 16.15 — 9 septembre 2026
+
+- même contenu que la 16.14 corrigée (les 12 corrections d'interface sont incluses), publiée sous un nouveau numéro de version afin que l'application propose automatiquement la mise à jour aux utilisateurs déjà passés en 16.14 ;
+- mise à jour `extVersionCode = 15`.
+
 ## 16.14 — 9 septembre 2026
 
 - **tous les sites, toujours** : suppression des modes de recherche rapide/équilibré/complet et de l'arrêt quand une VF est trouvée — tous les sites activés sont interrogés jusqu'au bout, en parallèle ; chaque site renvoie l'intégralité de ses liens (bornés uniquement par « flux maximum par site », illimité par défaut). C'est la cause principale du « seulement 2 sites sur 27 répondent » ;
