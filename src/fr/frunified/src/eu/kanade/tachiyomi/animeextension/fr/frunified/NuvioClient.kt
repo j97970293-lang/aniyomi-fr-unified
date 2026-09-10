@@ -44,6 +44,7 @@ object NuvioClient {
 
     private const val SCRIPT_TTL_MS = 12 * 60 * 60 * 1000L // 12 h
     private const val MANIFEST_TTL_MS = 6 * 60 * 60 * 1000L // 6 h
+
     /**
      * Durée de vie maximale d'UN scrapeur (16.17 : 40 s → 25 s). Un site mort
      * n'occupe plus son slot de parallélisme trop longtemps : les sites lents ou
