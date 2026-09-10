@@ -17,6 +17,7 @@ import android.text.InputType
 import android.text.TextUtils
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.MeasureSpec
 import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
@@ -2322,10 +2323,29 @@ class FrUnified : Source() {
      * sélection des sources, configuration des sources) poussaient le bouton hors
      * de l'écran et on ne pouvait pas enregistrer.
      */
+    private class CappedScrollView(context: Context) : ScrollView(context) {
+        /** Hauteur maximale en pixels (0 = sans limite). */
+        var capHeightPx: Int = 0
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val capped = if (capHeightPx <= 0) {
+                heightMeasureSpec
+            } else if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.UNSPECIFIED) {
+                MeasureSpec.makeMeasureSpec(capHeightPx, MeasureSpec.AT_MOST)
+            } else {
+                MeasureSpec.makeMeasureSpec(
+                    minOf(MeasureSpec.getSize(heightMeasureSpec), capHeightPx),
+                    MeasureSpec.AT_MOST,
+                )
+            }
+            super.onMeasure(widthMeasureSpec, capped)
+        }
+    }
+
     private fun cappedScroll(dialogContext: Context, inner: View): ScrollView =
-        ScrollView(dialogContext).apply {
+        CappedScrollView(dialogContext).apply {
             addView(inner)
-            maximumHeight = (dialogContext.resources.displayMetrics.heightPixels * 0.58f).toInt()
+            capHeightPx = (dialogContext.resources.displayMetrics.heightPixels * 0.58f).toInt()
         }
 
     /**
@@ -2884,6 +2904,11 @@ class FrUnified : Source() {
                 .show()
         }
 
+        // Ré-affichage de l'ensemble (affecté après les déclarations des fonctions
+        // de rafraîchissement : les fonctions locales ne peuvent pas s'appeler
+        // mutuellement avant leur déclaration).
+        var refreshView: () -> Unit = {}
+
         // ── Une carte fournisseur : interrupteur + dépôt/types + statut + actions ──
         fun buildProviderCard(scraper: NuvioClient.NuvioScraper): View {
             val card = LinearLayout(dialogContext).apply {
@@ -2958,13 +2983,11 @@ class FrUnified : Source() {
             }
             actionButton("↑", L10n.t("Monter dans le classement", "Move up in the ranking")) {
                 moveInOrder(scraper.id, -1)
-                refreshProviders()
-                refreshRepoTabs()
+                refreshView()
             }
             actionButton("↓", L10n.t("Descendre dans le classement", "Move down in the ranking")) {
                 moveInOrder(scraper.id, 1)
-                refreshProviders()
-                refreshRepoTabs()
+                refreshView()
             }
             if (scraper.envDefaults.isNotEmpty() || scraper.requiredEnv.isNotEmpty()) {
                 actionButton("⚙️", L10n.t("Configurer la source", "Configure the source")) {
@@ -2994,9 +3017,7 @@ class FrUnified : Source() {
                 } else {
                     workingEnabled.add(scraper.id)
                 }
-                refreshStats()
-                refreshRepoTabs()
-                refreshProviders()
+                refreshView()
             }
             card.setOnLongClickListener {
                 confirmRemoveRepo(scraper)
@@ -3249,6 +3270,11 @@ class FrUnified : Source() {
             }
         })
 
+        refreshView = {
+            refreshStats()
+            refreshRepoTabs()
+            refreshProviders()
+        }
         refreshStats()
         refreshRepoTabs()
         refreshRepos()
@@ -4255,25 +4281,9 @@ class FrUnified : Source() {
         val listSection = LinearLayout(dialogContext).apply { orientation = LinearLayout.VERTICAL }
         container.addView(listSection)
 
-        fun refreshList() {
-            listSection.removeAllViews()
-            val visible = choices
-                .filter { matchesQuery(it) }
-                .sortedWith { a, b -> orderIndex(a.value).compareTo(orderIndex(b.value)) }
-            if (visible.isEmpty()) {
-                listSection.addView(
-                    TextView(dialogContext).apply {
-                        text = L10n.t("Aucun addon ne correspond.", "No matching addon.")
-                        textSize = 13f
-                        setPadding(0, (density * 8).toInt(), 0, (density * 8).toInt())
-                    },
-                )
-                return
-            }
-            visible.forEach { choice ->
-                listSection.addView(buildAddonCard(choice, catalogs.count { it.addonBase == choice.value }))
-            }
-        }
+        // Ré-affichage de l'ensemble (affecté après les déclarations : les fonctions
+        // locales ne peuvent pas s'appeler mutuellement avant leur déclaration).
+        var refreshView: () -> Unit = {}
 
         // ── Une carte addon : interrupteur + catalogues + classement + suppression ──
         fun buildAddonCard(choice: AddonCard, catalogCount: Int): View {
@@ -4336,11 +4346,11 @@ class FrUnified : Source() {
             }
             actionButton("↑", L10n.t("Monter dans le classement", "Move up in the ranking")) {
                 moveInOrder(choice.value, -1)
-                refreshList()
+                refreshView()
             }
             actionButton("↓", L10n.t("Descendre dans le classement", "Move down in the ranking")) {
                 moveInOrder(choice.value, 1)
-                refreshList()
+                refreshView()
             }
             actionButton("🗑", L10n.t("Supprimer l'addon", "Remove the addon")) {
                 confirmRemove(choice)
@@ -4352,14 +4362,33 @@ class FrUnified : Source() {
                 } else {
                     workingEnabled.add(choice.value)
                 }
-                refreshStats()
-                refreshList()
+                refreshView()
             }
             card.setOnLongClickListener {
                 confirmRemove(choice)
                 true
             }
             return card
+        }
+
+        fun refreshList() {
+            listSection.removeAllViews()
+            val visible = choices
+                .filter { matchesQuery(it) }
+                .sortedWith { a, b -> orderIndex(a.value).compareTo(orderIndex(b.value)) }
+            if (visible.isEmpty()) {
+                listSection.addView(
+                    TextView(dialogContext).apply {
+                        text = L10n.t("Aucun addon ne correspond.", "No matching addon.")
+                        textSize = 13f
+                        setPadding(0, (density * 8).toInt(), 0, (density * 8).toInt())
+                    },
+                )
+                return
+            }
+            visible.forEach { choice ->
+                listSection.addView(buildAddonCard(choice, catalogs.count { it.addonBase == choice.value }))
+            }
         }
 
         search.addTextChangedListener(object : TextWatcher {
@@ -4371,6 +4400,10 @@ class FrUnified : Source() {
             }
         })
 
+        refreshView = {
+            refreshStats()
+            refreshList()
+        }
         refreshStats()
         refreshList()
 
