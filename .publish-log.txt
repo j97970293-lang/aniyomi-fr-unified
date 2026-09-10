@@ -1,0 +1,94 @@
+Starting a Gradle Daemon (subsequent builds will be faster)
+> Task :buildSrc:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :buildSrc:generateExternalPluginSpecBuilders FROM-CACHE
+> Task :buildSrc:extractPrecompiledScriptPluginPlugins FROM-CACHE
+> Task :buildSrc:compilePluginsBlocks FROM-CACHE
+> Task :buildSrc:generatePrecompiledScriptPluginAccessors FROM-CACHE
+> Task :buildSrc:generateScriptPluginAdapters FROM-CACHE
+> Task :buildSrc:compileKotlin FROM-CACHE
+> Task :buildSrc:compileJava NO-SOURCE
+> Task :buildSrc:compileGroovy NO-SOURCE
+> Task :buildSrc:pluginDescriptors
+> Task :buildSrc:processResources
+> Task :buildSrc:classes
+> Task :buildSrc:jar
+> Task :spotlessInternalRegisterDependencies
+> Task :src:fr:frunified:spotlessGradle
+> Task :src:fr:frunified:spotlessGradleCheck
+> Task :src:fr:frunified:spotlessKotlin
+> Task :src:fr:frunified:spotlessKotlinCheck
+> Task :src:fr:frunified:spotlessXml FROM-CACHE
+> Task :src:fr:frunified:spotlessXmlCheck UP-TO-DATE
+> Task :src:fr:frunified:spotlessCheck
+> Task :core:preBuild UP-TO-DATE
+> Task :core:preReleaseBuild UP-TO-DATE
+> Task :core:mergeReleaseJniLibFolders
+> Task :core:mergeReleaseNativeLibs NO-SOURCE
+> Task :core:copyReleaseJniLibsProjectOnly
+> Task :src:fr:frunified:preBuild UP-TO-DATE
+> Task :src:fr:frunified:preReleaseBuild UP-TO-DATE
+> Task :src:fr:frunified:mergeReleaseJniLibFolders
+> Task :src:fr:frunified:mergeReleaseNativeLibs NO-SOURCE
+> Task :src:fr:frunified:stripReleaseDebugSymbols NO-SOURCE
+> Task :src:fr:frunified:extractReleaseNativeSymbolTables NO-SOURCE
+> Task :src:fr:frunified:mergeReleaseNativeDebugMetadata NO-SOURCE
+> Task :core:prepareReleaseArtProfile
+> Task :src:fr:frunified:mergeReleaseArtProfile
+> Task :src:fr:frunified:expandReleaseL8ArtProfileWildcards
+> Task :core:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core:generateReleaseResources
+> Task :core:packageReleaseResources
+> Task :core:parseReleaseLocalResources FROM-CACHE
+> Task :core:generateReleaseRFile FROM-CACHE
+> Task :core:compileReleaseKotlin
+> Task :core:javaPreCompileRelease FROM-CACHE
+> Task :core:compileReleaseJavaWithJavac NO-SOURCE
+> Task :core:bundleLibRuntimeToDirRelease
+> Task :src:fr:frunified:checkReleaseDuplicateClasses
+> Task :src:fr:frunified:buildKotlinToolingMetadata
+> Task :core:bundleLibCompileToJarRelease
+> Task :src:fr:frunified:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :src:fr:frunified:generateReleaseBuildConfig
+> Task :core:compileReleaseLibraryResources
+> Task :core:writeReleaseAarMetadata
+> Task :src:fr:frunified:checkReleaseAarMetadata
+> Task :src:fr:frunified:generateReleaseResValues FROM-CACHE
+> Task :src:fr:frunified:mapReleaseSourceSetPaths
+> Task :src:fr:frunified:generateReleaseResources
+> Task :src:fr:frunified:mergeReleaseResources
+> Task :src:fr:frunified:createReleaseCompatibleScreenManifests
+> Task :core:extractDeepLinksRelease FROM-CACHE
+> Task :core:processReleaseManifest FROM-CACHE
+> Task :src:fr:frunified:extractDeepLinksRelease FROM-CACHE
+> Task :src:fr:frunified:processReleaseMainManifest
+> Task :src:fr:frunified:processReleaseManifest
+> Task :src:fr:frunified:processReleaseManifestForPackage
+> Task :src:fr:frunified:processReleaseResources
+
+> Task :src:fr:frunified:compileReleaseKotlin FAILED
+e: file:///home/runner/work/aniyomi-fr-unified/aniyomi-fr-unified/src/fr/frunified/src/eu/kanade/tachiyomi/animeextension/fr/frunified/FrUnified.kt:20:21 Unresolved reference 'MeasureSpec'.
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/__run_2-1789016829638.json
+
+[Incubating] Problems report is available at: file:///home/runner/work/aniyomi-fr-unified/aniyomi-fr-unified/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':src:fr:frunified:compileReleaseKotlin'.
+> A failure occurred while executing org.jetbrains.kotlin.compilerRunner.GradleCompilerRunnerWithWorkers$GradleKotlinCompilerWorkAction
+   > Compilation error. See log for more details
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.13/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD FAILED in 57s
+49 actionable tasks: 34 executed, 14 from cache, 1 up-to-date
