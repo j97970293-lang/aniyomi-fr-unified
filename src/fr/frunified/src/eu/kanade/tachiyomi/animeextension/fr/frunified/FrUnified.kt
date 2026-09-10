@@ -17,7 +17,6 @@ import android.text.InputType
 import android.text.TextUtils
 import android.text.TextWatcher
 import android.view.Gravity
-import android.view.MeasureSpec
 import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
@@ -2330,12 +2329,12 @@ class FrUnified : Source() {
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
             val capped = if (capHeightPx <= 0) {
                 heightMeasureSpec
-            } else if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.UNSPECIFIED) {
-                MeasureSpec.makeMeasureSpec(capHeightPx, MeasureSpec.AT_MOST)
+            } else if (View.MeasureSpec.getMode(heightMeasureSpec) == View.MeasureSpec.UNSPECIFIED) {
+                View.MeasureSpec.makeMeasureSpec(capHeightPx, View.MeasureSpec.AT_MOST)
             } else {
-                MeasureSpec.makeMeasureSpec(
-                    minOf(MeasureSpec.getSize(heightMeasureSpec), capHeightPx),
-                    MeasureSpec.AT_MOST,
+                View.MeasureSpec.makeMeasureSpec(
+                    minOf(View.MeasureSpec.getSize(heightMeasureSpec), capHeightPx),
+                    View.MeasureSpec.AT_MOST,
                 )
             }
             super.onMeasure(widthMeasureSpec, capped)
