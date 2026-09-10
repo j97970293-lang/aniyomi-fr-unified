@@ -343,9 +343,10 @@ object FrSettings {
             val saved = string(KEY_STREMIO_ORDER, "")
                 .lineSequence().map(String::trim).filter(String::isNotBlank).toList()
             if (saved.isEmpty()) return stremioUrls.distinct()
-            return saved + stremioUrls.distinct().filterNot { base ->
-                saved.any { it.equals(base, true) }
-            }
+            return saved +
+                stremioUrls.distinct().filterNot { base ->
+                    saved.any { it.equals(base, true) }
+                }
         }
 
     internal fun saveStremioOrder(values: List<String>) {
@@ -400,7 +401,12 @@ object FrSettings {
 
     internal fun saveNuvioBlocked(values: Set<String>) {
         runCatching {
-            prefs?.edit()?.putString(KEY_NUVIO_BLOCKED, values.map { it.lowercase() }.distinct().joinToString("\n"))?.apply()
+            prefs?.edit()?.putString(
+                KEY_NUVIO_BLOCKED,
+                values.map {
+                    it.lowercase()
+                }.distinct().joinToString("\n"),
+            )?.apply()
         }
     }
     val nuvioEnabled: Set<String>
@@ -431,7 +437,12 @@ object FrSettings {
 
     internal fun saveNuvioQualityExcludes(values: Set<String>) {
         runCatching {
-            prefs?.edit()?.putString(KEY_NUVIO_QUALITY_EXCLUDES, values.map { it.uppercase() }.distinct().joinToString("\n"))?.apply()
+            prefs?.edit()?.putString(
+                KEY_NUVIO_QUALITY_EXCLUDES,
+                values.map {
+                    it.uppercase()
+                }.distinct().joinToString("\n"),
+            )?.apply()
         }
     }
 
@@ -457,6 +468,7 @@ object FrSettings {
     val nuvioOrder: List<String>
         get() = string(KEY_NUVIO_ORDER, RECOMMENDED_NUVIO_IDS.joinToString("\n"))
             .lineSequence().map(String::trim).filter(String::isNotBlank).toList()
+
     /**
      * Sites interrogés en même temps (16.17 : 3 → 6 par défaut) : plus de
      * parallélisme = les résultats des sites lents arrivent plus tôt, et

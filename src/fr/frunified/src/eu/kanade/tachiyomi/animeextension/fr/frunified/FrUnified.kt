@@ -2722,10 +2722,10 @@ class FrUnified : Source() {
                         .setTitle(L10n.t("Supprimer le dépôt", "Remove the repository"))
                         .setMessage(
                             L10n.t(
-                                "Supprimer « ${NuvioClient.repoLabel(repo)} » et bloquer ses ${scrapers.size} source(s) ? " +
-                                    "Elles ne répondront plus, même fournies par un autre dépôt.",
-                                "Remove « ${NuvioClient.repoLabel(repo)} » and block its ${scrapers.size} source(s)? " +
-                                    "They will stop responding, even when provided by another repository.",
+                                "Supprimer « ${NuvioClient.repoLabel(repo)} » et bloquer ses ${scrapers.size} " +
+                                    "source(s) ? Elles ne répondront plus, même fournies par un autre dépôt.",
+                                "Remove « ${NuvioClient.repoLabel(repo)} » and block its ${scrapers.size} " +
+                                    "source(s)? They will stop responding, even when provided by another repository.",
                             ),
                         )
                         .setNegativeButton(L10n.t("Annuler", "Cancel"), null)
@@ -2840,6 +2840,9 @@ class FrUnified : Source() {
         }
 
         // ── Classement : monter/descendre un fournisseur (celui du haut part d'abord) ──
+        fun orderIndex(id: String): Int =
+            workingOrder.indexOfFirst { it.equals(id, true) }.let { if (it < 0) Int.MAX_VALUE else it }
+
         fun moveInOrder(id: String, direction: Int) {
             val index = workingOrder.indexOfFirst { it.equals(id, true) }
             if (index < 0) return
@@ -2851,9 +2854,10 @@ class FrUnified : Source() {
             swapped[target] = tmp
             workingOrder = swapped
             // On conserve les entrées enregistrées qui ne sont plus chargées ici.
-            val merged = swapped + FrSettings.nuvioOrder.filterNot { saved ->
-                swapped.any { it.equals(saved, true) }
-            }
+            val merged = swapped +
+                FrSettings.nuvioOrder.filterNot { saved ->
+                    swapped.any { it.equals(saved, true) }
+                }
             preferences.edit().putString(FrSettings.KEY_NUVIO_ORDER, merged.joinToString("\n")).apply()
         }
 
@@ -3009,11 +3013,7 @@ class FrUnified : Source() {
             providersSection.removeAllViews()
             val visible = all
                 .filter { matchesRepo(it) && matchesQuery(it) }
-                .sortedWith { a, b ->
-                    val ia = workingOrder.indexOfFirst { it.equals(a.id, true) }.let { if (it < 0) Int.MAX_VALUE else it }
-                    val ib = workingOrder.indexOfFirst { it.equals(b.id, true) }.let { if (it < 0) Int.MAX_VALUE else it }
-                    ia.compareTo(ib)
-                }
+                .sortedWith { a, b -> orderIndex(a.id).compareTo(orderIndex(b.id)) }
             if (visible.isEmpty()) {
                 providersSection.addView(
                     TextView(dialogContext).apply {
@@ -3133,9 +3133,11 @@ class FrUnified : Source() {
                                 .setTitle(L10n.t("Supprimer le dépôt", "Remove the repository"))
                                 .setMessage(
                                     L10n.t(
-                                        "Supprimer « ${NuvioClient.repoLabel(repo)} » et bloquer ses ${providers.size} source(s) ? " +
+                                        "Supprimer « ${NuvioClient.repoLabel(repo)} » et " +
+                                            "bloquer ses ${providers.size} source(s) ? " +
                                             "Elles ne répondront plus, même fournies par un autre dépôt.",
-                                        "Remove « ${NuvioClient.repoLabel(repo)} » and block its ${providers.size} source(s)? " +
+                                        "Remove « ${NuvioClient.repoLabel(repo)} » and " +
+                                            "block its ${providers.size} source(s)? " +
                                             "They will stop responding, even when provided by another repository.",
                                     ),
                                 )
@@ -3267,9 +3269,10 @@ class FrUnified : Source() {
                 }
                 hiddenExplicit + workingEnabled.toList()
             }
-            val finalOrder = workingOrder + FrSettings.nuvioOrder.filterNot { saved ->
-                workingOrder.any { it.equals(saved, true) }
-            }
+            val finalOrder = workingOrder +
+                FrSettings.nuvioOrder.filterNot { saved ->
+                    workingOrder.any { it.equals(saved, true) }
+                }
             preferences.edit()
                 .putString(
                     FrSettings.KEY_NUVIO_ENABLED,
@@ -4200,6 +4203,9 @@ class FrUnified : Source() {
         }
 
         // ── Classement : monter/descendre un addon (celui du haut part d'abord) ──
+        fun orderIndex(value: String): Int =
+            workingOrder.indexOfFirst { it.equals(value, true) }.let { if (it < 0) Int.MAX_VALUE else it }
+
         fun moveInOrder(value: String, direction: Int) {
             val index = workingOrder.indexOfFirst { it.equals(value, true) }
             if (index < 0) return
@@ -4211,9 +4217,10 @@ class FrUnified : Source() {
             swapped[target] = tmp
             workingOrder = swapped
             // On conserve les entrées enregistrées qui ne sont plus chargées ici.
-            val merged = swapped + FrSettings.stremioOrder.filterNot { saved ->
-                swapped.any { it.equals(saved, true) }
-            }
+            val merged = swapped +
+                FrSettings.stremioOrder.filterNot { saved ->
+                    swapped.any { it.equals(saved, true) }
+                }
             FrSettings.saveStremioOrder(merged)
         }
 
@@ -4252,11 +4259,7 @@ class FrUnified : Source() {
             listSection.removeAllViews()
             val visible = choices
                 .filter { matchesQuery(it) }
-                .sortedWith { a, b ->
-                    val ia = workingOrder.indexOfFirst { it.equals(a.value, true) }.let { if (it < 0) Int.MAX_VALUE else it }
-                    val ib = workingOrder.indexOfFirst { it.equals(b.value, true) }.let { if (it < 0) Int.MAX_VALUE else it }
-                    ia.compareTo(ib)
-                }
+                .sortedWith { a, b -> orderIndex(a.value).compareTo(orderIndex(b.value)) }
             if (visible.isEmpty()) {
                 listSection.addView(
                     TextView(dialogContext).apply {
@@ -4379,9 +4382,10 @@ class FrUnified : Source() {
                 .putString(FrSettings.KEY_STREMIO_DISABLED, disabled.distinct().joinToString("\n"))
                 .apply()
             FrSettings.saveStremioOrder(
-                workingOrder + FrSettings.stremioOrder.filterNot { saved ->
-                    workingOrder.any { it.equals(saved, true) }
-                },
+                workingOrder +
+                    FrSettings.stremioOrder.filterNot { saved ->
+                        workingOrder.any { it.equals(saved, true) }
+                    },
             )
             displayToast(
                 L10n.t(

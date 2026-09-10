@@ -146,11 +146,10 @@ object NuvioClient {
      * Providers déclarés par UN dépôt, sans filtre de blocage (16.17) : sert à
      * lever le blocage des sources d'un dépôt réajouté.
      */
-    suspend fun scrapersForRepo(repo: String): List<NuvioScraper> =
-        withTimeoutOrNull(20_000L) { manifest(repo) }.orEmpty()
-            .associateBy { it.id.lowercase() }
-            .values
-            .toList()
+    suspend fun scrapersForRepo(repo: String): List<NuvioScraper> {
+        val providers = withTimeoutOrNull(20_000L) { manifest(repo) }.orEmpty()
+        return providers.associateBy { it.id.lowercase() }.values.toList()
+    }
 
     /**
      * Libellé du dépôt d'origine d'une source, comme dans l'application NuviO :
@@ -174,12 +173,15 @@ object NuvioClient {
         }
     }
 
+    /**
+     * Providers sélectionnables (16.17) : les providers d'un dépôt supprimé
+     * « vraiment » restent bloqués (premier filtre) même si un autre dépôt
+     * déclare le même id ; puis filtres activation/manifest/types.
+     */
     internal fun selectableScrapers(
         values: List<NuvioScraper>,
         includeDisabled: Boolean,
     ): List<NuvioScraper> = values
-        // Suppression « vraiment » (16.17) : les providers d'un dépôt supprimé
-        // restent bloqués même si un autre dépôt déclare le même id.
         .filterNot { FrSettings.nuvioBlocked.contains(it.id.lowercase()) }
         .filter { includeDisabled || FrSettings.isNuvioEnabled(it.id) }
         .filter { includeDisabled || it.manifestEnabled }
